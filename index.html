@@ -8,7 +8,7 @@
       name="description"
       content="Mobile-friendly PoC for mapping places, capturing objects in context, and testing place-aware retrieval with user-supplied OpenAI API access."
     />
-    <link rel="stylesheet" href="styles.css?v=20260410-1409" />
+    <link rel="stylesheet" href="styles.css?v=20260410-1414" />
   </head>
   <body>
     <div class="app-shell">
@@ -367,38 +367,27 @@
                 <h3>Quick save object</h3>
 
                 <p class="fine-print">
-                  Start with the photo. AI can prefill the editable fields below before you save.
+                  Just snap one photo first. AI should prefill the editable fields below. A second photo is only optional if confidence is low.
                 </p>
 
-                <div class="capture-grid two-up">
-                  <label class="capture-field">
-                    <span>Object in context</span>
-                    <input
-                      name="contextFile"
-                      type="file"
-                      accept="image/*"
-                      capture="environment"
-                      required
-                    />
-                    <div class="capture-preview empty" data-preview-for="contextFile">Required</div>
-                  </label>
-
-                  <label class="capture-field">
-                    <span>Alternate object angle</span>
-                    <input
-                      name="alternateObjectFile"
-                      type="file"
-                      accept="image/*"
-                      capture="environment"
-                    />
-                    <div class="capture-preview empty" data-preview-for="alternateObjectFile">Optional</div>
-                  </label>
-                </div>
+                <label class="capture-field">
+                  <span>Object in context</span>
+                  <input
+                    name="contextFile"
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    required
+                  />
+                  <div class="capture-preview empty" data-preview-for="contextFile">Required</div>
+                </label>
 
                 <div class="button-row align-left">
                   <button type="button" class="ghost" id="prefillObjectBtn">AI prefill</button>
                   <button type="submit" class="primary">Save object</button>
                 </div>
+
+                <input type="hidden" name="quality" value="good" />
 
                 <label>
                   Object name (AI prefills, you can edit)
@@ -418,17 +407,6 @@
                 </label>
 
                 <label>
-                  Capture quality
-                  <select name="quality">
-                    <option value="good">Good</option>
-                    <option value="dim">Dim</option>
-                    <option value="partial occlusion">Partial occlusion</option>
-                    <option value="cluttered">Cluttered</option>
-                    <option value="hard case">Hard case</option>
-                  </select>
-                </label>
-
-                <label>
                   Attributes / notes (AI prefills, you can edit)
                   <textarea
                     name="notes"
@@ -436,15 +414,29 @@
                     placeholder="AI can prefill visible attributes, materials, colors, or ambiguity notes. You can edit before saving."
                   ></textarea>
                 </label>
+
+                <details class="subcard">
+                  <summary>Optional second photo, only if AI is unsure</summary>
+                  <label class="capture-field">
+                    <span>Alternate object angle</span>
+                    <input
+                      name="alternateObjectFile"
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                    />
+                    <div class="capture-preview empty" data-preview-for="alternateObjectFile">Optional</div>
+                  </label>
+                </details>
               </form>
 
               <div class="subcard stack-lg">
                 <div>
                   <h3>Quick-save guidance</h3>
                   <ul class="hint-list">
-                    <li>Start with one photo that shows the object and enough of the surrounding place.</li>
-                    <li>Use AI prefill first, then edit the suggested object name, place, and attributes if needed.</li>
-                    <li>If the app is unsure about the place, map the place first instead of forcing a wrong save.</li>
+                    <li>Start with one context photo only. That is the default happy path.</li>
+                    <li>AI should prefill object name, place, and attributes, then the user can edit before saving.</li>
+                    <li>If the app is unsure, ask for more context, a second photo, or place capture instead of forcing a bad save.</li>
                     <li>Later search should work from natural descriptions, not exact labels.</li>
                   </ul>
                 </div>
@@ -573,6 +565,6 @@
       </main>
     </div>
 
-    <script src="script.js?v=20260410-1409"></script>
+    <script src="script.js?v=20260410-1414"></script>
   </body>
 </html>

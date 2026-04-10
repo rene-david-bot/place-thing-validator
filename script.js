@@ -601,7 +601,7 @@ You will first see the object-in-context photo, then optional alternate object v
   if (!draft.place.predictedPlaceId || draft.place.shouldCapturePlaceFirst) {
     setBanner('I am not sure this place is mapped yet. Capture the place first or choose a mapped place before saving the object.', 'warn', 7000);
   } else if (lowConfidence) {
-    setBanner(`I prefilled the object and place, but I am not fully sure. Please review ${draft.object.predictedLabel || 'the object'} and ${placeName} before saving.`, 'warn', 7000);
+    setBanner(`I prefilled the object and place, but I am not fully sure. Please review ${draft.object.predictedLabel || 'the object'} and ${placeName}, and add the optional second photo if needed before saving.`, 'warn', 7000);
   } else {
     setBanner(`AI prefilled ${draft.object.predictedLabel || 'the object'} in ${placeName}. Review it and save when ready.`, 'success', 5000);
   }
@@ -626,7 +626,7 @@ async function handleObjectSubmit(event) {
     try {
       await prefillObjectFromForm();
       if (!safeString(refs.objectForm.elements.placeId.value)) {
-        setBanner('The object is prefilled, but I still do not know the place. Capture the place first or choose it manually before saving.', 'warn', 7000);
+        setBanner('The object is prefilled, but I still do not know the place. Capture the place first, choose it manually, or add the optional second photo if needed.', 'warn', 7000);
       } else {
         setBanner('The object is prefilled. Review the suggestion, adjust if needed, then tap Save object again.', 'success', 6000);
       }
