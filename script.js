@@ -1122,10 +1122,8 @@ function summarizeBenchmarkModel(modelResult) {
   const queryCount = modelResult.queryResults.length;
   const successfulQueries = modelResult.queryResults.filter((entry) => entry.correct !== null);
   const allEntries = [...modelResult.placeResults, ...modelResult.objectResults, ...modelResult.queryResults];
-
-  const promptTokens = allEntries.reduce((sum, entry) => sum + Number(entry.usage?.promptTokens || 0), 0);
-  const completionTokens = allEntries.reduce((sum, entry) => sum + Number(entry.usage?.completionTokens || 0), 0);
-  const totalTokens = allEntries.reduce((sum, entry) => sum + Number(entry.usage?.totalTokens || 0), 0);
+  const totalUsage = sumUsage(allEntries);
+  const costs = buildBenchmarkCostBreakdown(modelResult);
   const avgLatencyMs = allEntries.reduce((sum, entry) => sum + Number(entry.latencyMs || 0), 0) / Math.max(allEntries.length, 1);
 
   return {
@@ -1138,9 +1136,11 @@ function summarizeBenchmarkModel(modelResult) {
     queryCount,
     queryAccuracy: successfulQueries.length ? successfulQueries.filter((entry) => entry.correct).length / successfulQueries.length : 0,
     avgLatencyMs,
-    promptTokens,
-    completionTokens,
-    totalTokens,
+    promptTokens: totalUsage.promptTokens,
+    completionTokens: totalUsage.completionTokens,
+    totalTokens: totalUsage.totalTokens,
+    totalCostUsd: costs.total.costUsd,
+    costs,
     errorCount: modelResult.placeResults.filter((entry) => entry.error).length + modelResult.objectResults.filter((entry) => entry.error).length,
   };
 }
@@ -1223,7 +1223,18 @@ async function runModelBenchmark() {
       placeAnalysisSuccesses: modelResult.metrics.placeAnalysisSuccesses,
       jointTop1: modelResult.metrics.jointTop1,
       queryAccuracy: modelResult.metrics.queryAccuracy,
+      promptTokens: modelResult.metrics.promptTokens,
+      completionTokens: modelResult.metrics.completionTokens,
       totalTokens: modelResult.metrics.totalTokens,
+      estimatedCostUsd: modelResult.metrics.totalCostUsd,
+      operationCosts: {
+        placeTotalUsd: modelResult.metrics.costs?.place?.costUsd ?? null,
+        placeAvgUsd: modelResult.metrics.costs?.place?.avgCostUsd ?? null,
+        objectTotalUsd: modelResult.metrics.costs?.object?.costUsd ?? null,
+        objectAvgUsd: modelResult.metrics.costs?.object?.avgCostUsd ?? null,
+        queryTotalUsd: modelResult.metrics.costs?.query?.costUsd ?? null,
+        queryAvgUsd: modelResult.metrics.costs?.query?.avgCostUsd ?? null,
+      },
     });
   }
 
@@ -1235,7 +1246,18 @@ async function runModelBenchmark() {
       placeTop1: entry.metrics?.placeTop1 || 0,
       jointTop1: entry.metrics?.jointTop1 || 0,
       queryAccuracy: entry.metrics?.queryAccuracy || 0,
+      promptTokens: entry.metrics?.promptTokens || 0,
+      completionTokens: entry.metrics?.completionTokens || 0,
       totalTokens: entry.metrics?.totalTokens || 0,
+      estimatedCostUsd: entry.metrics?.totalCostUsd ?? null,
+      operationCosts: {
+        placeTotalUsd: entry.metrics?.costs?.place?.costUsd ?? null,
+        placeAvgUsd: entry.metrics?.costs?.place?.avgCostUsd ?? null,
+        objectTotalUsd: entry.metrics?.costs?.object?.costUsd ?? null,
+        objectAvgUsd: entry.metrics?.costs?.object?.avgCostUsd ?? null,
+        queryTotalUsd: entry.metrics?.costs?.query?.costUsd ?? null,
+        queryAvgUsd: entry.metrics?.costs?.query?.avgCostUsd ?? null,
+      },
     })),
   });
 
@@ -1713,6 +1735,14 @@ function describeOpenAIError(payload, status) {
   return `OpenAI request failed with status ${status}.`;
 }
 
+const MODEL_PRICING_USD_PER_MILLION = {
+  'gpt-5.4': { input: 2.50, cachedInput: 0.25, output: 15.00 },
+  'gpt-5.4-mini': { input: 0.75, cachedInput: 0.075, output: 4.50 },
+  'gpt-5.4-nano': { input: 0.20, cachedInput: 0.02, output: 1.25 },
+  'gpt-5.2': { input: 1.75, cachedInput: 0.175, output: 14.00 },
+  'gpt-5.1': { input: 1.25, cachedInput: 0.125, output: 10.00 },
+};
+
 function buildModelCandidates() {
   return Array.from(new Set([
     safeString(settings.model) || DEFAULT_MODEL,
@@ -1723,6 +1753,87 @@ function buildModelCandidates() {
     'gpt-5.2',
     'gpt-5.1',
   ].filter(Boolean)));
+}
+
+function resolvePricingModel(model) {
+  const normalized = safeString(model).toLowerCase();
+  if (!normalized) return null;
+  if (normalized.startsWith('gpt-5.4-mini')) return 'gpt-5.4-mini';
+  if (normalized.startsWith('gpt-5.4-nano')) return 'gpt-5.4-nano';
+  if (normalized.startsWith('gpt-5.4')) return 'gpt-5.4';
+  if (normalized.startsWith('gpt-5.2')) return 'gpt-5.2';
+  if (normalized.startsWith('gpt-5.1')) return 'gpt-5.1';
+  return null;
+}
+
+function sumUsage(entries) {
+  return entries.reduce((totals, entry) => ({
+    promptTokens: totals.promptTokens + Number(entry?.usage?.promptTokens || 0),
+    completionTokens: totals.completionTokens + Number(entry?.usage?.completionTokens || 0),
+    totalTokens: totals.totalTokens + Number(entry?.usage?.totalTokens || 0),
+  }), { promptTokens: 0, completionTokens: 0, totalTokens: 0 });
+}
+
+function estimateUsageCostUsd(model, usage) {
+  const pricingModel = resolvePricingModel(model);
+  const pricing = pricingModel ? MODEL_PRICING_USD_PER_MILLION[pricingModel] : null;
+  if (!pricing) return null;
+  const promptCost = Number(usage?.promptTokens || 0) / 1_000_000 * pricing.input;
+  const completionCost = Number(usage?.completionTokens || 0) / 1_000_000 * pricing.output;
+  return {
+    pricingModel,
+    inputRate: pricing.input,
+    outputRate: pricing.output,
+    promptCostUsd: promptCost,
+    completionCostUsd: completionCost,
+    totalCostUsd: promptCost + completionCost,
+  };
+}
+
+function buildBenchmarkCostBreakdown(modelResult) {
+  const placeUsage = sumUsage(modelResult.placeResults || []);
+  const objectUsage = sumUsage(modelResult.objectResults || []);
+  const queryUsage = sumUsage(modelResult.queryResults || []);
+  const totalUsage = sumUsage([
+    ...(modelResult.placeResults || []),
+    ...(modelResult.objectResults || []),
+    ...(modelResult.queryResults || []),
+  ]);
+
+  const totalCost = estimateUsageCostUsd(modelResult.model, totalUsage);
+  const placeCost = estimateUsageCostUsd(modelResult.model, placeUsage);
+  const objectCost = estimateUsageCostUsd(modelResult.model, objectUsage);
+  const queryCost = estimateUsageCostUsd(modelResult.model, queryUsage);
+
+  return {
+    pricingModel: totalCost?.pricingModel || resolvePricingModel(modelResult.model),
+    place: {
+      count: modelResult.placeResults?.length || 0,
+      usage: placeUsage,
+      costUsd: placeCost?.totalCostUsd ?? null,
+      avgCostUsd: placeCost && (modelResult.placeResults?.length || 0) ? placeCost.totalCostUsd / modelResult.placeResults.length : null,
+    },
+    object: {
+      count: modelResult.objectResults?.length || 0,
+      usage: objectUsage,
+      costUsd: objectCost?.totalCostUsd ?? null,
+      avgCostUsd: objectCost && (modelResult.objectResults?.length || 0) ? objectCost.totalCostUsd / modelResult.objectResults.length : null,
+    },
+    query: {
+      count: modelResult.queryResults?.length || 0,
+      usage: queryUsage,
+      costUsd: queryCost?.totalCostUsd ?? null,
+      avgCostUsd: queryCost && (modelResult.queryResults?.length || 0) ? queryCost.totalCostUsd / modelResult.queryResults.length : null,
+    },
+    total: {
+      usage: totalUsage,
+      costUsd: totalCost?.totalCostUsd ?? null,
+      promptCostUsd: totalCost?.promptCostUsd ?? null,
+      completionCostUsd: totalCost?.completionCostUsd ?? null,
+      inputRate: totalCost?.inputRate ?? null,
+      outputRate: totalCost?.outputRate ?? null,
+    },
+  };
 }
 
 function usesCompletionTokens(model) {
@@ -2804,6 +2915,7 @@ function renderBenchmarkSummary() {
 
   const cards = latest.models.map((modelResult) => {
     const metrics = modelResult.metrics || summarizeBenchmarkModel(modelResult);
+    const costs = metrics.costs || buildBenchmarkCostBreakdown(modelResult);
     return `
       <article class="entity-card">
         <div>
@@ -2817,9 +2929,11 @@ function renderBenchmarkSummary() {
           ${metrics.queryCount ? `<span class="tag">Search ${(metrics.queryAccuracy * 100).toFixed(0)}%</span>` : ''}
           <span class="tag">Avg ${Math.round(metrics.avgLatencyMs)} ms</span>
           <span class="tag">Tokens ${metrics.totalTokens}</span>
+          ${metrics.totalCostUsd != null ? `<span class="tag good">Cost ${formatUsd(metrics.totalCostUsd)}</span>` : ''}
           ${metrics.errorCount ? `<span class="tag warn">Errors ${metrics.errorCount}</span>` : ''}
         </div>
-        <p class="caption">Prompt ${metrics.promptTokens} • Completion ${metrics.completionTokens} • Total ${metrics.totalTokens}</p>
+        <p class="caption">Prompt ${metrics.promptTokens} • Completion ${metrics.completionTokens} • Total ${metrics.totalTokens}${costs.total?.inputRate != null ? ` • Pricing ${formatUsd(costs.total.inputRate)}/1M in, ${formatUsd(costs.total.outputRate)}/1M out` : ''}</p>
+        ${metrics.totalCostUsd != null ? `<p class="caption">Typical cost: place ${costs.place.avgCostUsd != null ? formatUsd(costs.place.avgCostUsd) : 'n/a'} each • object ${costs.object.avgCostUsd != null ? formatUsd(costs.object.avgCostUsd) : 'n/a'} each${metrics.queryCount ? ` • search ${costs.query.avgCostUsd != null ? formatUsd(costs.query.avgCostUsd) : 'n/a'} each` : ''}</p>` : ''}
       </article>
     `;
   }).join('');
@@ -3331,6 +3445,14 @@ function textContainsPhraseish(text, query) {
 
 function formatPercent(value) {
   return `${Math.round((Number(value) || 0) * 100)}%`;
+}
+
+function formatUsd(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return '$0.00';
+  if (amount >= 1) return `$${amount.toFixed(2)}`;
+  if (amount >= 0.01) return `$${amount.toFixed(3)}`;
+  return `$${amount.toFixed(4)}`;
 }
 
 function clamp(value, min, max) {
