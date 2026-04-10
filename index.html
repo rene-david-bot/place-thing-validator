@@ -8,7 +8,7 @@
       name="description"
       content="Mobile-friendly PoC for mapping places, capturing objects in context, and testing place-aware retrieval with user-supplied OpenAI API access."
     />
-    <link rel="stylesheet" href="styles.css?v=20260410-1422" />
+    <link rel="stylesheet" href="styles.css?v=20260410-1510" />
   </head>
   <body>
     <div class="app-shell">
@@ -540,6 +540,34 @@
             </div>
 
             <div class="subcard stack-lg">
+              <div class="panel-head">
+                <div>
+                  <h3>Model benchmark</h3>
+                  <p class="muted">
+                    Compare smaller models on the captured dataset to find the cheapest setup that still works.
+                  </p>
+                </div>
+                <button type="button" class="ghost" id="runBenchmarkBtn">Run benchmark</button>
+              </div>
+
+              <label>
+                Models to test (comma separated)
+                <input
+                  id="benchmarkModelsInput"
+                  type="text"
+                  value="gpt-5.4, gpt-5, gpt-4.1-mini, gpt-4o-mini"
+                  spellcheck="false"
+                />
+              </label>
+
+              <p class="fine-print">
+                Current benchmark scope: one-photo object prefill on saved objects, plus AI query understanding on saved searches that have expected truth.
+              </p>
+
+              <div id="benchmarkSummary" class="entity-list empty">No benchmark run yet.</div>
+            </div>
+
+            <div class="subcard stack-lg">
               <h3>Detailed evaluation</h3>
               <div id="resultsDetails" class="entity-list empty">No object inference results yet.</div>
             </div>
@@ -565,6 +593,6 @@
       </main>
     </div>
 
-    <script src="script.js?v=20260410-1422"></script>
+    <script src="script.js?v=20260410-1510"></script>
   </body>
 </html>

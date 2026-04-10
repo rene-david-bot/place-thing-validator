@@ -12,6 +12,7 @@ const DEFAULT_STATE = {
   places: [],
   objects: [],
   queryTests: [],
+  benchmarks: [],
   logs: [],
   ui: {
     activeStep: 'overview',
@@ -62,6 +63,8 @@ const refs = {
   objectForm: document.getElementById('objectForm'),
   challengeForm: document.getElementById('challengeForm'),
   prefillObjectBtn: document.getElementById('prefillObjectBtn'),
+  runBenchmarkBtn: document.getElementById('runBenchmarkBtn'),
+  benchmarkModelsInput: document.getElementById('benchmarkModelsInput'),
   exportBtn: document.getElementById('exportBtn'),
   resetBtn: document.getElementById('resetBtn'),
   copyDebugLogBtn: document.getElementById('copyDebugLogBtn'),
@@ -92,6 +95,7 @@ const refs = {
   metricChallenges: document.getElementById('metricChallenges'),
   resultsSummary: document.getElementById('resultsSummary'),
   buildRecommendation: document.getElementById('buildRecommendation'),
+  benchmarkSummary: document.getElementById('benchmarkSummary'),
 };
 
 boot();
@@ -145,6 +149,9 @@ function bindEvents() {
   });
   refs.prefillObjectBtn?.addEventListener('click', () => {
     void runButtonTask(refs.prefillObjectBtn, refs.prefillObjectBtn.textContent, () => prefillObjectFromForm());
+  });
+  refs.runBenchmarkBtn?.addEventListener('click', () => {
+    void runButtonTask(refs.runBenchmarkBtn, refs.runBenchmarkBtn.textContent, () => runModelBenchmark());
   });
   refs.challengeForm.addEventListener('submit', handleChallengeSubmit);
   refs.exportBtn.addEventListener('click', () => {
@@ -223,6 +230,7 @@ function loadState() {
       places: Array.isArray(parsed?.places) ? parsed.places : [],
       objects: Array.isArray(parsed?.objects) ? parsed.objects : [],
       queryTests: Array.isArray(parsed?.queryTests) ? parsed.queryTests : [],
+      benchmarks: Array.isArray(parsed?.benchmarks) ? parsed.benchmarks : [],
       logs: Array.isArray(parsed?.logs) ? parsed.logs : [],
       ui: {
         ...fallback.ui,
@@ -759,6 +767,316 @@ ${queryText}
   }
 }
 
+function parseBenchmarkModels(inputValue) {
+  return Array.from(new Set(
+    safeString(inputValue)
+      .split(',')
+      .map((value) => safeString(value))
+      .filter(Boolean),
+  ));
+}
+
+async function buildReferencePlaceImages(blindMode) {
+  const referenceImages = [];
+  for (const place of state.places) {
+    const refAssetId = place.assetIds?.[0];
+    if (!refAssetId) continue;
+    const refAsset = await getAsset(refAssetId);
+    if (!refAsset?.blob) continue;
+    referenceImages.push({
+      label: blindMode
+        ? `Reference place image for ${place.id}, ${refAsset.captureType}`
+        : `Reference place image for ${place.id}, ${place.name}, ${refAsset.captureType}`,
+      blob: refAsset.blob,
+    });
+  }
+  return referenceImages;
+}
+
+async function runObjectPrefillForBenchmark(object, model, blindMode, knownPlaces, referenceImages) {
+  const objectAssets = await getAssets(object.assetIds || []);
+  const sortedAssets = [...objectAssets].sort((a, b) => {
+    if (a.captureType === 'context') return -1;
+    if (b.captureType === 'context') return 1;
+    return 0;
+  });
+  const contextAsset = sortedAssets[0];
+  const alternateAsset = sortedAssets[1] || null;
+  if (!contextAsset?.blob) {
+    return {
+      model,
+      objectId: object.id,
+      error: 'Missing context image',
+    };
+  }
+
+  const systemPrompt = [
+    'You are assisting with a one-photo object deposit workflow for a storage retrieval app.',
+    'Return strict JSON only.',
+    'Infer the likely object label, category, useful attributes, and whether the surrounding place matches one of the known places.',
+    'If the place is not known or confidence is low, set predictedPlaceId to null and shouldCapturePlaceFirst to true.',
+    'Use uncertainty honestly and ask for clarification when confidence is low.',
+    blindMode
+      ? 'Blind mode is on. Human object labels, place labels, and notes are intentionally withheld. Use the images and blind place-memory cues only.'
+      : 'You may use the supplied human metadata as supporting context.',
+  ].join(' ');
+
+  const userText = `
+Return JSON with this shape:
+{
+  "object": {
+    "predictedLabel": "...",
+    "category": "...",
+    "attributes": ["..."],
+    "notes": "...",
+    "confidence": 0.0
+  },
+  "place": {
+    "predictedPlaceId": "place_123 or null",
+    "predictedLabel": "...",
+    "confidence": 0.0,
+    "knownPlace": true,
+    "shouldCapturePlaceFirst": false,
+    "reason": "..."
+  },
+  "overall": {
+    "confidence": 0.0,
+    "needsUserConfirmation": true,
+    "questions": ["..."]
+  }
+}
+
+KNOWN_PLACES_JSON:
+${JSON.stringify(knownPlaces, null, 2)}
+
+OBJECT_CAPTURE_CONTEXT:
+${JSON.stringify(
+      {
+        captureQuality: safeString(object.quality) || 'good',
+        mappedPlaceCount: state.places.length,
+        blindMode,
+      },
+      null,
+      2,
+    )}
+
+You will first see the object-in-context photo, then optional alternate object views, then representative place images.
+`;
+
+  const startedAt = Date.now();
+  try {
+    const result = await callOpenAIJson({
+      systemPrompt,
+      userText,
+      imageEntries: [
+        { label: 'Object capture in context', blob: contextAsset.blob },
+        ...(alternateAsset?.blob ? [{ label: 'Alternate object angle', blob: alternateAsset.blob }] : []),
+        ...referenceImages,
+      ],
+      modelCandidates: [model],
+    });
+    const draft = normalizeObjectPrefill(result.parsed);
+    return {
+      model,
+      objectId: object.id,
+      expectedObjectLabel: object.name,
+      expectedPlaceId: object.placeId,
+      predictedObjectLabel: draft.object.predictedLabel,
+      predictedPlaceId: draft.place.predictedPlaceId,
+      objectCorrect: labelsMatch(draft.object.predictedLabel, object.name),
+      placeCorrect: draft.place.predictedPlaceId === object.placeId,
+      jointCorrect: labelsMatch(draft.object.predictedLabel, object.name) && draft.place.predictedPlaceId === object.placeId,
+      confidence: draft.overall.confidence,
+      latencyMs: Date.now() - startedAt,
+      usage: result.usage,
+      error: null,
+    };
+  } catch (error) {
+    return {
+      model,
+      objectId: object.id,
+      expectedObjectLabel: object.name,
+      expectedPlaceId: object.placeId,
+      latencyMs: Date.now() - startedAt,
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      error: error?.message || 'Benchmark prefill failed',
+    };
+  }
+}
+
+async function buildChallengeQueryProfileForModel(queryText, model) {
+  const fallback = {
+    source: 'local',
+    paraphrase: queryText,
+    detectedLanguage: '',
+    tokens: tokenize(queryText),
+    objectTerms: [],
+    placeTerms: [],
+    attributes: [],
+    synonyms: [],
+    usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+    latencyMs: 0,
+  };
+
+  try {
+    const startedAt = Date.now();
+    const result = await callOpenAIJson({
+      systemPrompt: [
+        'You turn retrieval queries in any language into language-agnostic search hints for a storage app.',
+        'Return strict JSON only.',
+        'Keep it concise and practical for matching objects, places, and visible attributes.',
+      ].join(' '),
+      userText: `
+Return JSON with this shape:
+{
+  "paraphrase": "...",
+  "detectedLanguage": "...",
+  "objectTerms": ["..."],
+  "placeTerms": ["..."],
+  "attributes": ["..."],
+  "synonyms": ["..."]
+}
+
+QUERY:
+${queryText}
+`,
+      modelCandidates: [model],
+    });
+
+    const expanded = normalizeChallengeQueryExpansion(result.parsed, queryText);
+    const mergedTokens = Array.from(new Set([
+      ...tokenize(queryText),
+      ...tokenize(expanded.paraphrase),
+      ...tokenize(expanded.objectTerms.join(' ')),
+      ...tokenize(expanded.placeTerms.join(' ')),
+      ...tokenize(expanded.attributes.join(' ')),
+      ...tokenize(expanded.synonyms.join(' ')),
+    ]));
+
+    return {
+      ...expanded,
+      source: 'ai',
+      model: result.model,
+      tokens: mergedTokens,
+      usage: result.usage,
+      latencyMs: Date.now() - startedAt,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function summarizeBenchmarkModel(modelResult) {
+  const objectSuccesses = modelResult.objectResults.filter((entry) => !entry.error);
+  const objectCount = objectSuccesses.length;
+  const queryCount = modelResult.queryResults.length;
+  const successfulQueries = modelResult.queryResults.filter((entry) => entry.correct !== null);
+
+  const promptTokens = [...modelResult.objectResults, ...modelResult.queryResults]
+    .reduce((sum, entry) => sum + Number(entry.usage?.promptTokens || 0), 0);
+  const completionTokens = [...modelResult.objectResults, ...modelResult.queryResults]
+    .reduce((sum, entry) => sum + Number(entry.usage?.completionTokens || 0), 0);
+  const totalTokens = [...modelResult.objectResults, ...modelResult.queryResults]
+    .reduce((sum, entry) => sum + Number(entry.usage?.totalTokens || 0), 0);
+  const avgLatencyMs = [...objectSuccesses, ...modelResult.queryResults]
+    .reduce((sum, entry) => sum + Number(entry.latencyMs || 0), 0) / Math.max(objectSuccesses.length + modelResult.queryResults.length, 1);
+
+  return {
+    objectCount,
+    objectLabelAccuracy: objectCount ? objectSuccesses.filter((entry) => entry.objectCorrect).length / objectCount : 0,
+    placeTop1: objectCount ? objectSuccesses.filter((entry) => entry.placeCorrect).length / objectCount : 0,
+    jointTop1: objectCount ? objectSuccesses.filter((entry) => entry.jointCorrect).length / objectCount : 0,
+    queryCount,
+    queryAccuracy: successfulQueries.length ? successfulQueries.filter((entry) => entry.correct).length / successfulQueries.length : 0,
+    avgLatencyMs,
+    promptTokens,
+    completionTokens,
+    totalTokens,
+    errorCount: modelResult.objectResults.filter((entry) => entry.error).length,
+  };
+}
+
+async function runModelBenchmark() {
+  if (!ensureRun()) return;
+  if (!getApiKey()) {
+    navigate('overview');
+    setBanner('Add your OpenAI key first, then run the benchmark.', 'warn', 5000);
+    return;
+  }
+
+  const models = parseBenchmarkModels(refs.benchmarkModelsInput.value);
+  if (!models.length) {
+    setBanner('Add at least one model to benchmark.', 'warn', 4000);
+    return;
+  }
+
+  const benchmarkObjects = state.objects.filter((object) => object.placeId && (object.assetIds || []).length);
+  if (!benchmarkObjects.length) {
+    setBanner('Capture and save a few objects first so there is something to benchmark.', 'warn', 5000);
+    return;
+  }
+
+  const scoredQueries = state.queryTests.filter((query) => query.expectedObjectId || query.expectedPlaceId);
+  const blindMode = isBlindModeEnabled();
+  const knownPlaces = buildKnownPlacesForInference(blindMode);
+  const referenceImages = await buildReferencePlaceImages(blindMode);
+
+  const benchmarkRun = {
+    id: uid('benchmark'),
+    createdAt: new Date().toISOString(),
+    blindMode,
+    objectCount: benchmarkObjects.length,
+    queryCount: scoredQueries.length,
+    models: [],
+  };
+
+  setBanner(`Running benchmark for ${models.length} model(s). This can take a moment.`, 'warn', 6000);
+
+  for (const model of models) {
+    appendLog('benchmark.model.start', `Running benchmark for ${model}.`, {
+      model,
+      objectCount: benchmarkObjects.length,
+      queryCount: scoredQueries.length,
+    });
+
+    const modelResult = {
+      model,
+      objectResults: [],
+      queryResults: [],
+      metrics: null,
+    };
+
+    for (const object of benchmarkObjects) {
+      modelResult.objectResults.push(await runObjectPrefillForBenchmark(object, model, blindMode, knownPlaces, referenceImages));
+    }
+
+    for (const query of scoredQueries) {
+      const queryProfile = await buildChallengeQueryProfileForModel(query.queryText, model);
+      const result = runChallenge(query.queryText, query.queryType, query.expectedObjectId, query.expectedPlaceId, queryProfile);
+      modelResult.queryResults.push({
+        queryText: query.queryText,
+        correct: result.correct,
+        latencyMs: queryProfile.latencyMs || 0,
+        usage: queryProfile.usage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      });
+    }
+
+    modelResult.metrics = summarizeBenchmarkModel(modelResult);
+    benchmarkRun.models.push(modelResult);
+
+    appendLog('benchmark.model.success', `Benchmark finished for ${model}.`, {
+      model,
+      jointTop1: modelResult.metrics.jointTop1,
+      totalTokens: modelResult.metrics.totalTokens,
+    });
+  }
+
+  state.benchmarks = [benchmarkRun, ...(state.benchmarks || [])].slice(0, 5);
+  saveState();
+  await render();
+  setBanner('Model benchmark finished. Review the results in the Results tab.', 'success', 5000);
+}
+
 async function handleChallengeSubmit(event) {
   event.preventDefault();
   if (!state.objects.length) {
@@ -1109,7 +1427,7 @@ Use both the object and the background context.
   }
 }
 
-async function callOpenAIJson({ systemPrompt, userText, imageEntries = [] }) {
+async function callOpenAIJson({ systemPrompt, userText, imageEntries = [], modelCandidates = null }) {
   const apiKey = getApiKey();
   if (!apiKey) throw new Error('No OpenAI key is set in this browser.');
 
@@ -1125,10 +1443,12 @@ async function callOpenAIJson({ systemPrompt, userText, imageEntries = [] }) {
     });
   }
 
-  const modelCandidates = buildModelCandidates();
+  const candidates = Array.isArray(modelCandidates) && modelCandidates.length
+    ? modelCandidates.filter(Boolean)
+    : buildModelCandidates();
   let lastError = null;
 
-  for (const model of modelCandidates) {
+  for (const model of candidates) {
     appendLog('ai.model.attempt', `Trying model ${model}.`, { model });
     const basePayload = {
       model,
@@ -1182,7 +1502,7 @@ async function callOpenAIJson({ systemPrompt, userText, imageEntries = [] }) {
 
     if (!response.ok) {
       lastError = new Error(describeOpenAIError(data, response.status));
-      if (shouldTryAnotherModel(data, response.status, model, modelCandidates)) {
+      if (shouldTryAnotherModel(data, response.status, model, candidates)) {
         appendLog('ai.model.fallback', `Model ${model} failed, trying fallback.`, {
           model,
           error: lastError.message,
@@ -1203,6 +1523,11 @@ async function callOpenAIJson({ systemPrompt, userText, imageEntries = [] }) {
       model: data?.model || model,
       rawText,
       parsed,
+      usage: {
+        promptTokens: Number(data?.usage?.prompt_tokens || 0),
+        completionTokens: Number(data?.usage?.completion_tokens || 0),
+        totalTokens: Number(data?.usage?.total_tokens || 0),
+      },
     };
   }
 
@@ -1867,6 +2192,7 @@ function loadDemoData() {
       },
     ],
     queryTests: [],
+    benchmarks: [],
     logs: [],
     ui: {
       activeStep: 'results',
@@ -1994,6 +2320,7 @@ async function render() {
   updateRunStatus();
   updateApiStatus();
   renderMetricsAndSummary();
+  renderBenchmarkSummary();
   await renderChallengeResult(token);
   if (token !== renderToken) return;
   renderDebugLog();
@@ -2277,6 +2604,46 @@ function renderMetricsAndSummary() {
   `;
 
   refs.buildRecommendation.textContent = computeRecommendation(metrics);
+}
+
+function renderBenchmarkSummary() {
+  const latest = state.benchmarks?.[0];
+  if (!latest) {
+    refs.benchmarkSummary.className = 'entity-list empty';
+    refs.benchmarkSummary.textContent = 'No benchmark run yet.';
+    return;
+  }
+
+  const cards = latest.models.map((modelResult) => {
+    const metrics = modelResult.metrics || summarizeBenchmarkModel(modelResult);
+    return `
+      <article class="entity-card">
+        <div>
+          <h4>${escapeHtml(modelResult.model)}</h4>
+          <p>${metrics.objectCount} object evals, ${metrics.queryCount} search evals</p>
+        </div>
+        <div class="tag-row">
+          <span class="tag">Object ${(metrics.objectLabelAccuracy * 100).toFixed(0)}%</span>
+          <span class="tag">Place ${(metrics.placeTop1 * 100).toFixed(0)}%</span>
+          <span class="tag">Joint ${(metrics.jointTop1 * 100).toFixed(0)}%</span>
+          ${metrics.queryCount ? `<span class="tag">Search ${(metrics.queryAccuracy * 100).toFixed(0)}%</span>` : ''}
+          <span class="tag">Avg ${Math.round(metrics.avgLatencyMs)} ms</span>
+          <span class="tag">Tokens ${metrics.totalTokens}</span>
+          ${metrics.errorCount ? `<span class="tag warn">Errors ${metrics.errorCount}</span>` : ''}
+        </div>
+        <p class="caption">Prompt ${metrics.promptTokens} • Completion ${metrics.completionTokens} • Total ${metrics.totalTokens}</p>
+      </article>
+    `;
+  }).join('');
+
+  refs.benchmarkSummary.className = 'entity-list';
+  refs.benchmarkSummary.innerHTML = `
+    <div class="score-row">
+      <strong>Latest benchmark</strong>
+      <p>${escapeHtml(new Date(latest.createdAt).toLocaleString())} • blind mode ${latest.blindMode ? 'on' : 'off'} • ${latest.objectCount} objects • ${latest.queryCount} scored searches</p>
+    </div>
+    ${cards}
+  `;
 }
 
 function renderDebugLog() {
