@@ -2,7 +2,7 @@ const STATE_KEY = 'placeThingValidatorStateV2';
 const SETTINGS_KEY = 'placeThingValidatorSettingsV2';
 const DB_NAME = 'placeThingValidatorDB';
 const DB_VERSION = 1;
-const DEFAULT_MODEL = 'gpt-4o-mini';
+const DEFAULT_MODEL = 'gpt-5.4';
 const PLACE_PROMPT_VERSION = 'place-v1';
 const OBJECT_PROMPT_VERSION = 'object-v1';
 
@@ -11,6 +11,7 @@ const DEFAULT_STATE = {
   places: [],
   objects: [],
   queryTests: [],
+  logs: [],
   ui: {
     activeStep: 'overview',
   },
@@ -18,7 +19,7 @@ const DEFAULT_STATE = {
 
 const DEFAULT_SETTINGS = {
   model: DEFAULT_MODEL,
-  rememberKey: false,
+  rememberKey: true,
   apiKey: '',
 };
 
@@ -51,6 +52,8 @@ const refs = {
   challengeForm: document.getElementById('challengeForm'),
   exportBtn: document.getElementById('exportBtn'),
   resetBtn: document.getElementById('resetBtn'),
+  copyDebugLogBtn: document.getElementById('copyDebugLogBtn'),
+  clearDebugLogBtn: document.getElementById('clearDebugLogBtn'),
   analyzeAllPlacesBtn: document.getElementById('analyzeAllPlacesBtn'),
   inferAllObjectsBtn: document.getElementById('inferAllObjectsBtn'),
   loadDemoBtn: document.querySelector('[data-fill-demo]'),
@@ -58,6 +61,7 @@ const refs = {
   objectsList: document.getElementById('objectsList'),
   challengeResult: document.getElementById('challengeResult'),
   resultsDetails: document.getElementById('resultsDetails'),
+  debugLogList: document.getElementById('debugLogList'),
   placeParentSelect: document.getElementById('placeParentSelect'),
   objectPlaceSelect: document.getElementById('objectPlaceSelect'),
   challengeObjectSelect: document.getElementById('challengeObjectSelect'),
@@ -125,6 +129,10 @@ function bindEvents() {
   refs.resetBtn.addEventListener('click', () => {
     void resetAllData();
   });
+  refs.copyDebugLogBtn.addEventListener('click', () => {
+    void copyDebugLog();
+  });
+  refs.clearDebugLogBtn.addEventListener('click', clearDebugLog);
   refs.loadDemoBtn?.addEventListener('click', loadDemoData);
   refs.analyzeAllPlacesBtn.addEventListener('click', () => {
     void analyzeAllPlaces();
@@ -190,6 +198,7 @@ function loadState() {
       places: Array.isArray(parsed?.places) ? parsed.places : [],
       objects: Array.isArray(parsed?.objects) ? parsed.objects : [],
       queryTests: Array.isArray(parsed?.queryTests) ? parsed.queryTests : [],
+      logs: Array.isArray(parsed?.logs) ? parsed.logs : [],
       ui: {
         ...fallback.ui,
         ...(parsed?.ui || {}),
@@ -249,6 +258,11 @@ function handleApiSubmit(event) {
 
   saveSettings();
   updateApiStatus();
+  appendLog('settings.save', 'Saved AI settings on this device.', {
+    model: settings.model,
+    rememberKey: settings.rememberKey,
+    hasKey: Boolean(getApiKey()),
+  });
   setBanner(
     getApiKey()
       ? 'OpenAI settings saved. The key stays local to this browser.'
@@ -266,6 +280,7 @@ function clearApiKey() {
   refs.rememberKeyInput.checked = false;
   saveSettings();
   updateApiStatus();
+  appendLog('settings.clear_key', 'Cleared stored AI key from this device.');
   setBanner('OpenAI key cleared from this browser.', 'success', 3000);
 }
 
@@ -276,17 +291,23 @@ async function testOpenAIConnection() {
     return;
   }
 
-  const result = await callOpenAIJson({
-    systemPrompt: 'You are a connectivity check. Return strict JSON only.',
-    userText: '{"status":"ok","purpose":"connectivity-check"}',
-    imageEntries: [],
-  });
+  try {
+    const result = await callOpenAIJson({
+      systemPrompt: 'You are a connectivity check. Return strict JSON only.',
+      userText: '{"status":"ok","purpose":"connectivity-check"}',
+      imageEntries: [],
+    });
 
-  settings.model = result.model;
-  refs.modelInput.value = result.model;
-  saveSettings();
-  updateApiStatus();
-  setBanner(`AI connection works. Active model: ${result.model}.`, 'success', 4500);
+    settings.model = result.model;
+    refs.modelInput.value = result.model;
+    saveSettings();
+    updateApiStatus();
+    appendLog('ai.connection_test', 'AI connection test succeeded.', { model: result.model });
+    setBanner(`AI connection works. Active model: ${result.model}.`, 'success', 4500);
+  } catch (error) {
+    appendLog('ai.connection_test_error', 'AI connection test failed.', { error: error?.message || 'Unknown error' }, 'error');
+    throw error;
+  }
 }
 
 function handleRunSubmit(event) {
@@ -305,6 +326,7 @@ function handleRunSubmit(event) {
   };
 
   saveState();
+  appendLog('run.create', `Saved run ${state.run.name}.`, { environmentType: state.run.environmentType });
   navigate('places');
   void render();
   setBanner(`Run saved, ${state.run.name}.`, 'success', 3500);
@@ -363,6 +385,7 @@ async function handlePlaceSubmit(event) {
   refs.placeForm.reset();
   clearFormPreviews(refs.placeForm);
   saveState();
+  appendLog('place.save', `Saved place ${safeString(form.get('name'))}.`, { imageCount: assetIds.length });
   await render();
   setBanner('Mapped place saved. You can analyze it with AI now.', 'success', 3500);
 }
@@ -422,6 +445,7 @@ async function handleObjectSubmit(event) {
   refs.objectForm.reset();
   clearFormPreviews(refs.objectForm);
   saveState();
+  appendLog('object.save', `Saved object ${safeString(form.get('name'))}.`, { imageCount: assetIds.length, placeId: safeString(form.get('placeId')) });
   await render();
   setBanner('Object capture saved. You can run AI inference now.', 'success', 3500);
 }
@@ -443,6 +467,11 @@ function handleChallengeSubmit(event) {
   const result = runChallenge(queryText, queryType, expectedObjectId, expectedPlaceId);
   state.queryTests.push(result);
   saveState();
+  appendLog('challenge.run', `Ran ${queryType} challenge.`, {
+    queryText,
+    correct: result.correct,
+    confidence: result.confidence,
+  });
   void render();
 
   if (result.correct === true) {
@@ -546,6 +575,7 @@ async function analyzePlace(placeId, { silent = false } = {}) {
   place.aiState = 'working';
   place.aiError = '';
   saveState();
+  appendLog('place.ai.start', `Started AI place analysis for ${place.name}.`, { placeId: place.id, assetCount: place.assetIds?.length || 0 });
   await render();
 
   try {
@@ -612,12 +642,14 @@ Capture what would help later place matching from object-in-context photos.
     place.aiState = 'done';
     place.aiError = '';
 
+    appendLog('place.ai.success', `AI place analysis succeeded for ${place.name}.`, { placeId: place.id, model: result.model });
     if (!silent) {
       setBanner(`AI place memory saved for ${place.name}.`, 'success', 4000);
     }
   } catch (error) {
     place.aiState = 'error';
     place.aiError = error?.message || 'AI place analysis failed.';
+    appendLog('place.ai.error', `AI place analysis failed for ${place.name}.`, { placeId: place.id, error: place.aiError }, 'error');
     throw error;
   } finally {
     saveState();
@@ -634,6 +666,7 @@ async function inferObject(objectId, { silent = false } = {}) {
   object.aiState = 'working';
   object.aiError = '';
   saveState();
+  appendLog('object.ai.start', `Started AI inference for ${object.name}.`, { objectId: object.id, assetCount: object.assetIds?.length || 0 });
   await render();
 
   try {
@@ -742,6 +775,11 @@ Use both the object and the background context.
     object.aiState = 'done';
     object.aiError = '';
 
+    appendLog('object.ai.success', `AI inference succeeded for ${object.name}.`, {
+      objectId: object.id,
+      model: result.model,
+      predictedPlaceId: object.inference.normalized.place.predictedPlaceId,
+    });
     if (!silent) {
       const predictedPlaceId = object.inference.normalized.place.predictedPlaceId;
       const correctPlace = predictedPlaceId && predictedPlaceId === object.placeId;
@@ -756,6 +794,7 @@ Use both the object and the background context.
   } catch (error) {
     object.aiState = 'error';
     object.aiError = error?.message || 'AI inference failed.';
+    appendLog('object.ai.error', `AI inference failed for ${object.name}.`, { objectId: object.id, error: object.aiError }, 'error');
     throw error;
   } finally {
     saveState();
@@ -783,6 +822,7 @@ async function callOpenAIJson({ systemPrompt, userText, imageEntries = [] }) {
   let lastError = null;
 
   for (const model of modelCandidates) {
+    appendLog('ai.model.attempt', `Trying model ${model}.`, { model });
     const basePayload = {
       model,
       temperature: 0.2,
@@ -834,6 +874,10 @@ async function callOpenAIJson({ systemPrompt, userText, imageEntries = [] }) {
     if (!response.ok) {
       lastError = new Error(describeOpenAIError(data, response.status));
       if (shouldTryAnotherModel(data, response.status, model, modelCandidates)) {
+        appendLog('ai.model.fallback', `Model ${model} failed, trying fallback.`, {
+          model,
+          error: lastError.message,
+        }, 'warn');
         continue;
       }
       throw lastError;
@@ -845,6 +889,7 @@ async function callOpenAIJson({ systemPrompt, userText, imageEntries = [] }) {
       throw new Error('OpenAI returned a response, but I could not parse valid JSON from it.');
     }
 
+    appendLog('ai.model.success', `OpenAI request succeeded with ${data?.model || model}.`, { model: data?.model || model });
     return {
       model: data?.model || model,
       rawText,
@@ -870,6 +915,8 @@ function buildModelCandidates() {
   return Array.from(new Set([
     safeString(settings.model) || DEFAULT_MODEL,
     DEFAULT_MODEL,
+    'gpt-5.4',
+    'gpt-5',
     'gpt-4o-mini',
     'gpt-4.1-mini',
   ].filter(Boolean)));
@@ -1388,6 +1435,7 @@ function loadDemoData() {
       },
     ],
     queryTests: [],
+    logs: [],
     ui: {
       activeStep: 'results',
     },
@@ -1514,6 +1562,7 @@ async function render() {
   updateApiStatus();
   renderMetricsAndSummary();
   renderChallengeResult();
+  renderDebugLog();
   await renderPlacesList(token);
   if (token !== renderToken) return;
   await renderObjectsList(token);
@@ -1768,6 +1817,70 @@ function renderMetricsAndSummary() {
   `;
 
   refs.buildRecommendation.textContent = computeRecommendation(metrics);
+}
+
+function renderDebugLog() {
+  const logs = state.logs || [];
+  if (!logs.length) {
+    refs.debugLogList.className = 'entity-list empty';
+    refs.debugLogList.textContent = 'No debug events yet.';
+    return;
+  }
+
+  const recent = logs.slice(-20).reverse();
+  refs.debugLogList.className = 'entity-list';
+  refs.debugLogList.innerHTML = recent.map((entry) => `
+    <article class="entity-card">
+      <div class="tag-row">
+        <span class="tag">${escapeHtml(entry.level || 'info')}</span>
+        <span class="tag">${escapeHtml(entry.type || 'event')}</span>
+        <span class="tag">${escapeHtml(entry.ts || '')}</span>
+      </div>
+      <p>${escapeHtml(entry.message || '')}</p>
+      ${entry.data && Object.keys(entry.data).length ? `<p class="caption">${escapeHtml(JSON.stringify(entry.data))}</p>` : ''}
+    </article>
+  `).join('');
+}
+
+async function copyDebugLog() {
+  const payload = JSON.stringify({
+    exportedAt: new Date().toISOString(),
+    run: state.run,
+    logs: state.logs || [],
+  }, null, 2);
+
+  try {
+    await navigator.clipboard.writeText(payload);
+    appendLog('debug.copy', 'Copied debug log to clipboard.', {}, 'info');
+    setBanner('Debug log copied. You can paste it to me after a mobile test run.', 'success', 4000);
+  } catch (error) {
+    setBanner('Could not copy the debug log automatically on this device.', 'error', 5000);
+  }
+}
+
+function clearDebugLog() {
+  const ok = confirm('Clear the local debug log for this browser?');
+  if (!ok) return;
+  state.logs = [];
+  saveState();
+  renderDebugLog();
+  setBanner('Local debug log cleared.', 'success', 3000);
+}
+
+function appendLog(type, message, data = {}, level = 'info') {
+  state.logs = Array.isArray(state.logs) ? state.logs : [];
+  state.logs.push({
+    id: uid('log'),
+    ts: new Date().toISOString(),
+    level,
+    type,
+    message,
+    data,
+  });
+  if (state.logs.length > 200) {
+    state.logs = state.logs.slice(-200);
+  }
+  saveState();
 }
 
 async function renderResultsDetails(token) {

@@ -85,7 +85,7 @@
                 <div>
                   <h3>OpenAI settings</h3>
                   <p class="muted">
-                    Recommended starting model: <code>gpt-4o-mini</code>. Change it if
+                    Recommended starting model: <code>gpt-5.4</code>. Change it if
                     your account exposes a better multimodal model.
                   </p>
                 </div>
@@ -107,7 +107,7 @@
                   <input
                     id="modelInput"
                     type="text"
-                    placeholder="gpt-4o-mini"
+                    placeholder="gpt-5.4"
                     autocomplete="off"
                     spellcheck="false"
                   />
@@ -535,6 +535,23 @@
             <div class="subcard stack-lg">
               <h3>Detailed evaluation</h3>
               <div id="resultsDetails" class="entity-list empty">No object inference results yet.</div>
+            </div>
+
+            <div class="subcard stack-lg">
+              <div class="panel-head">
+                <div>
+                  <h3>Debug log</h3>
+                  <p class="muted">
+                    Local device log for AI attempts, failures, and retrieval runs. You can
+                    copy this to me after mobile testing.
+                  </p>
+                </div>
+                <div class="hero-actions compact">
+                  <button type="button" class="ghost" id="copyDebugLogBtn">Copy debug log</button>
+                  <button type="button" class="ghost danger" id="clearDebugLogBtn">Clear log</button>
+                </div>
+              </div>
+              <div id="debugLogList" class="entity-list empty">No debug events yet.</div>
             </div>
           </section>
         </section>
