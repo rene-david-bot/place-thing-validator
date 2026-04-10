@@ -8,7 +8,7 @@
       name="description"
       content="Mobile-friendly PoC for mapping places, capturing objects in context, and testing place-aware retrieval with user-supplied OpenAI API access."
     />
-    <link rel="stylesheet" href="styles.css?v=20260410-1405" />
+    <link rel="stylesheet" href="styles.css?v=20260410-1409" />
   </head>
   <body>
     <div class="app-shell">
@@ -366,42 +366,9 @@
               <form id="objectForm" class="stack-lg subcard">
                 <h3>Quick save object</h3>
 
-                <label>
-                  Object name (AI can prefill)
-                  <input name="name" placeholder="Headphone box" />
-                </label>
-
-                <label>
-                  Category / type
-                  <input name="category" placeholder="electronics accessory" />
-                </label>
-
-                <label>
-                  Place (AI can prefill)
-                  <select name="placeId" id="objectPlaceSelect">
-                    <option value="">Choose a mapped place</option>
-                  </select>
-                </label>
-
-                <label>
-                  Capture quality
-                  <select name="quality">
-                    <option value="good">Good</option>
-                    <option value="dim">Dim</option>
-                    <option value="partial occlusion">Partial occlusion</option>
-                    <option value="cluttered">Cluttered</option>
-                    <option value="hard case">Hard case</option>
-                  </select>
-                </label>
-
-                <label>
-                  Attributes / notes
-                  <textarea
-                    name="notes"
-                    rows="3"
-                    placeholder="AI can prefill visible attributes, materials, colors, or ambiguity notes. You can edit before saving."
-                  ></textarea>
-                </label>
+                <p class="fine-print">
+                  Start with the photo. AI can prefill the editable fields below before you save.
+                </p>
 
                 <div class="capture-grid two-up">
                   <label class="capture-field">
@@ -433,10 +400,42 @@
                   <button type="submit" class="primary">Save object</button>
                 </div>
 
-                <p class="fine-print">
-                  Intended flow: take one context photo, let AI prefill object + place + attributes,
-                  adjust anything if needed, then save.
-                </p>
+                <label>
+                  Object name (AI prefills, you can edit)
+                  <input name="name" placeholder="Headphone box" />
+                </label>
+
+                <label>
+                  Category / type (AI prefills, you can edit)
+                  <input name="category" placeholder="electronics accessory" />
+                </label>
+
+                <label>
+                  Place (AI prefills, you can edit)
+                  <select name="placeId" id="objectPlaceSelect">
+                    <option value="">Choose a mapped place</option>
+                  </select>
+                </label>
+
+                <label>
+                  Capture quality
+                  <select name="quality">
+                    <option value="good">Good</option>
+                    <option value="dim">Dim</option>
+                    <option value="partial occlusion">Partial occlusion</option>
+                    <option value="cluttered">Cluttered</option>
+                    <option value="hard case">Hard case</option>
+                  </select>
+                </label>
+
+                <label>
+                  Attributes / notes (AI prefills, you can edit)
+                  <textarea
+                    name="notes"
+                    rows="3"
+                    placeholder="AI can prefill visible attributes, materials, colors, or ambiguity notes. You can edit before saving."
+                  ></textarea>
+                </label>
               </form>
 
               <div class="subcard stack-lg">
@@ -574,6 +573,6 @@
       </main>
     </div>
 
-    <script src="script.js?v=20260410-1405"></script>
+    <script src="script.js?v=20260410-1409"></script>
   </body>
 </html>
