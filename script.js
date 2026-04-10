@@ -793,6 +793,127 @@ async function buildReferencePlaceImages(blindMode) {
   return referenceImages;
 }
 
+async function runPlaceAnalysisForBenchmark(place, model, blindMode) {
+  const assets = await getAssets(place.assetIds || []);
+  if (!assets.length) {
+    return {
+      model,
+      placeId: place.id,
+      error: 'Missing place images',
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      latencyMs: 0,
+      normalized: null,
+    };
+  }
+
+  const systemPrompt = [
+    'You are analyzing storage-place photos for a retrieval validation PoC.',
+    'Return strict JSON only.',
+    'Do not invent unsupported specifics.',
+    'Focus on visible contextual cues that distinguish one place from another.',
+    'Use concise language and return arrays for cue lists.',
+    blindMode
+      ? 'Blind mode is on. Ignore human naming assumptions and rely on the images only.'
+      : 'You may use the supplied human place metadata as additional context.',
+  ].join(' ');
+
+  const userText = `
+Return JSON with this shape:
+{
+  "canonicalLabel": "...",
+  "placeTypeGuess": "...",
+  "conciseDescription": "...",
+  "visibleContextCues": ["..."],
+  "distinguishingFeatures": ["..."],
+  "likelyConfusions": ["..."],
+  "retrievalKeywords": ["..."],
+  "confidence": 0.0,
+  "shouldHedge": false,
+  "notes": "..."
+}
+
+Place metadata:
+${JSON.stringify(buildPlaceMetadataForPrompt(place, blindMode), null, 2)}
+
+The images belong to the same place.
+Capture what would help later place matching from object-in-context photos.
+`;
+
+  const startedAt = Date.now();
+  try {
+    const result = await callOpenAIJson({
+      systemPrompt,
+      userText,
+      imageEntries: assets.map((asset) => ({
+        label: `Place reference image, ${asset.captureType}`,
+        blob: asset.blob,
+      })),
+      modelCandidates: [model],
+    });
+
+    return {
+      model,
+      placeId: place.id,
+      error: null,
+      latencyMs: Date.now() - startedAt,
+      usage: result.usage,
+      normalized: normalizePlaceSummary(result.parsed),
+    };
+  } catch (error) {
+    return {
+      model,
+      placeId: place.id,
+      error: error?.message || 'Benchmark place analysis failed',
+      latencyMs: Date.now() - startedAt,
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      normalized: null,
+    };
+  }
+}
+
+function buildKnownPlacesFromBenchmarkPlaceResults(placeResults, blindMode) {
+  return state.places.map((place) => {
+    const placeResult = placeResults.find((entry) => entry.placeId === place.id);
+    return {
+      id: place.id,
+      ...(blindMode
+        ? {
+            blindMode: true,
+            aiSummary: placeResult?.normalized ? buildBlindAiSummary(placeResult.normalized) : null,
+          }
+        : {
+            name: place.name,
+            placeType: place.placeType,
+            parentPlaceLabel: resolvePlaceName(place.parentPlaceId),
+            manualDescription: place.description,
+            varianceNotes: place.varianceNotes,
+            aiSummary: placeResult?.normalized || null,
+          }),
+    };
+  });
+}
+
+function buildBenchmarkObjectSnapshot(object, objectResult, placeResultsMap) {
+  const place = getPlace(object.placeId);
+  const placeSummary = placeResultsMap.get(object.placeId)?.normalized || null;
+  return {
+    objectId: object.id,
+    placeId: object.placeId,
+    objectName: object.name,
+    objectCategory: object.category,
+    placeName: place?.name || 'Unknown place',
+    notes: object.notes,
+    description: place?.description || '',
+    cues: [
+      ...(placeSummary?.visibleContextCues || []),
+      ...(placeSummary?.distinguishingFeatures || []),
+      ...(placeSummary?.retrievalKeywords || []),
+    ].join(' '),
+    predictedObject: objectResult?.predictedObjectLabel || '',
+    predictedPlace: objectResult?.predictedPlaceId ? resolvePlaceName(objectResult.predictedPlaceId) || '' : '',
+  };
+}
+
 async function runObjectPrefillForBenchmark(object, model, blindMode, knownPlaces, referenceImages) {
   const objectAssets = await getAssets(object.assetIds || []);
   const sortedAssets = [...objectAssets].sort((a, b) => {
@@ -966,22 +1087,50 @@ ${queryText}
   }
 }
 
+async function runBenchmarkQueryForModel(query, model, benchmarkObjects) {
+  const queryProfile = await buildChallengeQueryProfileForModel(query.queryText, model);
+  const tokens = Array.from(new Set([
+    ...tokenize(query.queryText),
+    ...(Array.isArray(queryProfile?.tokens) ? queryProfile.tokens : []),
+  ]));
+  const rankedResults = benchmarkObjects
+    .map((snapshot) => scoreQuerySnapshot(snapshot, tokens, query.queryText, query.queryType))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5);
+
+  const result = buildChallengeOutcome(
+    query.queryText,
+    query.queryType,
+    query.expectedObjectId,
+    query.expectedPlaceId,
+    rankedResults,
+    queryProfile,
+  );
+
+  return {
+    queryText: query.queryText,
+    correct: result.correct,
+    latencyMs: queryProfile.latencyMs || 0,
+    usage: queryProfile.usage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+  };
+}
+
 function summarizeBenchmarkModel(modelResult) {
+  const placeSuccesses = modelResult.placeResults.filter((entry) => !entry.error);
   const objectSuccesses = modelResult.objectResults.filter((entry) => !entry.error);
   const objectCount = objectSuccesses.length;
   const queryCount = modelResult.queryResults.length;
   const successfulQueries = modelResult.queryResults.filter((entry) => entry.correct !== null);
+  const allEntries = [...modelResult.placeResults, ...modelResult.objectResults, ...modelResult.queryResults];
 
-  const promptTokens = [...modelResult.objectResults, ...modelResult.queryResults]
-    .reduce((sum, entry) => sum + Number(entry.usage?.promptTokens || 0), 0);
-  const completionTokens = [...modelResult.objectResults, ...modelResult.queryResults]
-    .reduce((sum, entry) => sum + Number(entry.usage?.completionTokens || 0), 0);
-  const totalTokens = [...modelResult.objectResults, ...modelResult.queryResults]
-    .reduce((sum, entry) => sum + Number(entry.usage?.totalTokens || 0), 0);
-  const avgLatencyMs = [...objectSuccesses, ...modelResult.queryResults]
-    .reduce((sum, entry) => sum + Number(entry.latencyMs || 0), 0) / Math.max(objectSuccesses.length + modelResult.queryResults.length, 1);
+  const promptTokens = allEntries.reduce((sum, entry) => sum + Number(entry.usage?.promptTokens || 0), 0);
+  const completionTokens = allEntries.reduce((sum, entry) => sum + Number(entry.usage?.completionTokens || 0), 0);
+  const totalTokens = allEntries.reduce((sum, entry) => sum + Number(entry.usage?.totalTokens || 0), 0);
+  const avgLatencyMs = allEntries.reduce((sum, entry) => sum + Number(entry.latencyMs || 0), 0) / Math.max(allEntries.length, 1);
 
   return {
+    placeAnalysisCount: modelResult.placeResults.length,
+    placeAnalysisSuccesses: placeSuccesses.length,
     objectCount,
     objectLabelAccuracy: objectCount ? objectSuccesses.filter((entry) => entry.objectCorrect).length / objectCount : 0,
     placeTop1: objectCount ? objectSuccesses.filter((entry) => entry.placeCorrect).length / objectCount : 0,
@@ -992,7 +1141,7 @@ function summarizeBenchmarkModel(modelResult) {
     promptTokens,
     completionTokens,
     totalTokens,
-    errorCount: modelResult.objectResults.filter((entry) => entry.error).length,
+    errorCount: modelResult.placeResults.filter((entry) => entry.error).length + modelResult.objectResults.filter((entry) => entry.error).length,
   };
 }
 
@@ -1018,13 +1167,13 @@ async function runModelBenchmark() {
 
   const scoredQueries = state.queryTests.filter((query) => query.expectedObjectId || query.expectedPlaceId);
   const blindMode = isBlindModeEnabled();
-  const knownPlaces = buildKnownPlacesForInference(blindMode);
   const referenceImages = await buildReferencePlaceImages(blindMode);
 
   const benchmarkRun = {
     id: uid('benchmark'),
     createdAt: new Date().toISOString(),
     blindMode,
+    placeCount: state.places.length,
     objectCount: benchmarkObjects.length,
     queryCount: scoredQueries.length,
     models: [],
@@ -1041,24 +1190,29 @@ async function runModelBenchmark() {
 
     const modelResult = {
       model,
+      placeResults: [],
       objectResults: [],
       queryResults: [],
       metrics: null,
     };
 
-    for (const object of benchmarkObjects) {
-      modelResult.objectResults.push(await runObjectPrefillForBenchmark(object, model, blindMode, knownPlaces, referenceImages));
+    for (const place of state.places) {
+      modelResult.placeResults.push(await runPlaceAnalysisForBenchmark(place, model, blindMode));
     }
 
+    const benchmarkKnownPlaces = buildKnownPlacesFromBenchmarkPlaceResults(modelResult.placeResults, blindMode);
+    for (const object of benchmarkObjects) {
+      modelResult.objectResults.push(await runObjectPrefillForBenchmark(object, model, blindMode, benchmarkKnownPlaces, referenceImages));
+    }
+
+    const placeResultsMap = new Map(modelResult.placeResults.map((entry) => [entry.placeId, entry]));
+    const benchmarkObjectSnapshots = benchmarkObjects.map((object) => {
+      const objectResult = modelResult.objectResults.find((entry) => entry.objectId === object.id);
+      return buildBenchmarkObjectSnapshot(object, objectResult, placeResultsMap);
+    });
+
     for (const query of scoredQueries) {
-      const queryProfile = await buildChallengeQueryProfileForModel(query.queryText, model);
-      const result = runChallenge(query.queryText, query.queryType, query.expectedObjectId, query.expectedPlaceId, queryProfile);
-      modelResult.queryResults.push({
-        queryText: query.queryText,
-        correct: result.correct,
-        latencyMs: queryProfile.latencyMs || 0,
-        usage: queryProfile.usage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-      });
+      modelResult.queryResults.push(await runBenchmarkQueryForModel(query, model, benchmarkObjectSnapshots));
     }
 
     modelResult.metrics = summarizeBenchmarkModel(modelResult);
@@ -1066,10 +1220,24 @@ async function runModelBenchmark() {
 
     appendLog('benchmark.model.success', `Benchmark finished for ${model}.`, {
       model,
+      placeAnalysisSuccesses: modelResult.metrics.placeAnalysisSuccesses,
       jointTop1: modelResult.metrics.jointTop1,
+      queryAccuracy: modelResult.metrics.queryAccuracy,
       totalTokens: modelResult.metrics.totalTokens,
     });
   }
+
+  appendLog('benchmark.run.complete', 'Model benchmark run finished.', {
+    models: benchmarkRun.models.map((entry) => ({
+      model: entry.model,
+      placeAnalysisSuccesses: entry.metrics?.placeAnalysisSuccesses || 0,
+      objectLabelAccuracy: entry.metrics?.objectLabelAccuracy || 0,
+      placeTop1: entry.metrics?.placeTop1 || 0,
+      jointTop1: entry.metrics?.jointTop1 || 0,
+      queryAccuracy: entry.metrics?.queryAccuracy || 0,
+      totalTokens: entry.metrics?.totalTokens || 0,
+    })),
+  });
 
   state.benchmarks = [benchmarkRun, ...(state.benchmarks || [])].slice(0, 5);
   saveState();
@@ -1826,16 +1994,7 @@ function normalizeConfidence(value) {
   return clamp(number, 0, 1);
 }
 
-function runChallenge(queryText, queryType, expectedObjectId, expectedPlaceId, queryProfile = null) {
-  const tokens = Array.from(new Set([
-    ...tokenize(queryText),
-    ...(Array.isArray(queryProfile?.tokens) ? queryProfile.tokens : []),
-  ]));
-  const rankedResults = state.objects
-    .map((object) => scoreObjectForQuery(object, tokens, queryText, queryType))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 5);
-
+function buildChallengeOutcome(queryText, queryType, expectedObjectId, expectedPlaceId, rankedResults, queryProfile = null) {
   const topResult = rankedResults[0] || null;
   const secondScore = rankedResults[1]?.score || 0;
   const margin = topResult ? topResult.score - secondScore : 0;
@@ -1877,23 +2036,15 @@ function runChallenge(queryText, queryType, expectedObjectId, expectedPlaceId, q
   };
 }
 
-function scoreObjectForQuery(object, tokens, queryText, queryType) {
-  const place = getPlace(object.placeId);
-  const objectInference = object.inference?.normalized || null;
-  const placeSummary = place?.aiSummary?.normalized || null;
-
-  const objectName = buildCanonicalText(object.name);
-  const objectCategory = buildCanonicalText(object.category);
-  const placeName = buildCanonicalText(place?.name || '');
-  const notes = buildCanonicalText(object.notes);
-  const description = buildCanonicalText(place?.description || '');
-  const cues = buildCanonicalText([
-    ...(placeSummary?.visibleContextCues || []),
-    ...(placeSummary?.distinguishingFeatures || []),
-    ...(placeSummary?.retrievalKeywords || []),
-  ].join(' '));
-  const predictedObject = buildCanonicalText(objectInference?.object?.predictedLabel || '');
-  const predictedPlace = buildCanonicalText(objectInference?.place?.predictedLabel || '');
+function scoreQuerySnapshot(snapshot, tokens, queryText, queryType) {
+  const objectName = buildCanonicalText(snapshot.objectName || '');
+  const objectCategory = buildCanonicalText(snapshot.objectCategory || '');
+  const placeName = buildCanonicalText(snapshot.placeName || '');
+  const notes = buildCanonicalText(snapshot.notes || '');
+  const description = buildCanonicalText(snapshot.description || '');
+  const cues = buildCanonicalText(snapshot.cues || '');
+  const predictedObject = buildCanonicalText(snapshot.predictedObject || '');
+  const predictedPlace = buildCanonicalText(snapshot.predictedPlace || '');
 
   let score = 0;
   const evidence = new Set();
@@ -1939,14 +2090,50 @@ function scoreObjectForQuery(object, tokens, queryText, queryType) {
   if (queryType === 'negative') score = Math.max(0, score - 2);
 
   return {
-    objectId: object.id,
-    placeId: object.placeId,
-    label: `${object.name} in ${place?.name || 'Unknown place'}`,
+    objectId: snapshot.objectId,
+    placeId: snapshot.placeId,
+    label: `${snapshot.objectName || 'Unknown object'} in ${snapshot.placeName || 'Unknown place'}`,
     score,
     evidence: Array.from(evidence),
-    objectName: object.name,
-    placeName: place?.name || 'Unknown place',
+    objectName: snapshot.objectName || 'Unknown object',
+    placeName: snapshot.placeName || 'Unknown place',
   };
+}
+
+function runChallenge(queryText, queryType, expectedObjectId, expectedPlaceId, queryProfile = null) {
+  const tokens = Array.from(new Set([
+    ...tokenize(queryText),
+    ...(Array.isArray(queryProfile?.tokens) ? queryProfile.tokens : []),
+  ]));
+  const rankedResults = state.objects
+    .map((object) => scoreObjectForQuery(object, tokens, queryText, queryType))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5);
+
+  return buildChallengeOutcome(queryText, queryType, expectedObjectId, expectedPlaceId, rankedResults, queryProfile);
+}
+
+function scoreObjectForQuery(object, tokens, queryText, queryType) {
+  const place = getPlace(object.placeId);
+  const objectInference = object.inference?.normalized || null;
+  const placeSummary = place?.aiSummary?.normalized || null;
+
+  return scoreQuerySnapshot({
+    objectId: object.id,
+    placeId: object.placeId,
+    objectName: object.name,
+    objectCategory: object.category,
+    placeName: place?.name || 'Unknown place',
+    notes: object.notes,
+    description: place?.description || '',
+    cues: [
+      ...(placeSummary?.visibleContextCues || []),
+      ...(placeSummary?.distinguishingFeatures || []),
+      ...(placeSummary?.retrievalKeywords || []),
+    ].join(' '),
+    predictedObject: objectInference?.object?.predictedLabel || '',
+    predictedPlace: objectInference?.place?.predictedLabel || '',
+  }, tokens, queryText, queryType);
 }
 
 async function exportRun() {
@@ -2620,7 +2807,7 @@ function renderBenchmarkSummary() {
       <article class="entity-card">
         <div>
           <h4>${escapeHtml(modelResult.model)}</h4>
-          <p>${metrics.objectCount} object evals, ${metrics.queryCount} search evals</p>
+          <p>${metrics.placeAnalysisSuccesses}/${metrics.placeAnalysisCount} place analyses, ${metrics.objectCount} object evals, ${metrics.queryCount} search evals</p>
         </div>
         <div class="tag-row">
           <span class="tag">Object ${(metrics.objectLabelAccuracy * 100).toFixed(0)}%</span>
@@ -2640,7 +2827,7 @@ function renderBenchmarkSummary() {
   refs.benchmarkSummary.innerHTML = `
     <div class="score-row">
       <strong>Latest benchmark</strong>
-      <p>${escapeHtml(new Date(latest.createdAt).toLocaleString())} • blind mode ${latest.blindMode ? 'on' : 'off'} • ${latest.objectCount} objects • ${latest.queryCount} scored searches</p>
+      <p>${escapeHtml(new Date(latest.createdAt).toLocaleString())} • blind mode ${latest.blindMode ? 'on' : 'off'} • ${latest.placeCount || 0} places • ${latest.objectCount} objects • ${latest.queryCount} scored searches</p>
     </div>
     ${cards}
   `;
