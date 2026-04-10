@@ -2,7 +2,7 @@ const STATE_KEY = 'placeThingValidatorStateV2';
 const SETTINGS_KEY = 'placeThingValidatorSettingsV2';
 const DB_NAME = 'placeThingValidatorDB';
 const DB_VERSION = 1;
-const DEFAULT_MODEL = 'gpt-4.1-mini';
+const DEFAULT_MODEL = 'gpt-4o-mini';
 const PLACE_PROMPT_VERSION = 'place-v1';
 const OBJECT_PROMPT_VERSION = 'object-v1';
 
@@ -43,6 +43,7 @@ const refs = {
   apiKeyInput: document.getElementById('apiKeyInput'),
   modelInput: document.getElementById('modelInput'),
   rememberKeyInput: document.getElementById('rememberKeyInput'),
+  testConnectionBtn: document.getElementById('testConnectionBtn'),
   clearApiBtn: document.getElementById('clearApiBtn'),
   runForm: document.getElementById('runForm'),
   placeForm: document.getElementById('placeForm'),
@@ -106,6 +107,9 @@ function bindEvents() {
   });
 
   refs.apiForm.addEventListener('submit', handleApiSubmit);
+  refs.testConnectionBtn.addEventListener('click', () => {
+    void runButtonTask(refs.testConnectionBtn, refs.testConnectionBtn.textContent, testOpenAIConnection);
+  });
   refs.clearApiBtn.addEventListener('click', clearApiKey);
   refs.runForm.addEventListener('submit', handleRunSubmit);
   refs.placeForm.addEventListener('submit', (event) => {
@@ -265,6 +269,26 @@ function clearApiKey() {
   setBanner('OpenAI key cleared from this browser.', 'success', 3000);
 }
 
+async function testOpenAIConnection() {
+  if (!getApiKey()) {
+    navigate('overview');
+    setBanner('Add your OpenAI key first, then test the connection.', 'warn', 5000);
+    return;
+  }
+
+  const result = await callOpenAIJson({
+    systemPrompt: 'You are a connectivity check. Return strict JSON only.',
+    userText: '{"status":"ok","purpose":"connectivity-check"}',
+    imageEntries: [],
+  });
+
+  settings.model = result.model;
+  refs.modelInput.value = result.model;
+  saveSettings();
+  updateApiStatus();
+  setBanner(`AI connection works. Active model: ${result.model}.`, 'success', 4500);
+}
+
 function handleRunSubmit(event) {
   event.preventDefault();
   const form = new FormData(refs.runForm);
@@ -332,6 +356,8 @@ async function handlePlaceSubmit(event) {
     status: 'mapped',
     createdAt: new Date().toISOString(),
     aiSummary: null,
+    aiState: 'idle',
+    aiError: '',
   });
 
   refs.placeForm.reset();
@@ -389,6 +415,8 @@ async function handleObjectSubmit(event) {
     status: 'captured',
     createdAt: new Date().toISOString(),
     inference: null,
+    aiState: 'idle',
+    aiError: '',
   });
 
   refs.objectForm.reset();
@@ -515,18 +543,24 @@ async function analyzePlace(placeId, { silent = false } = {}) {
   const place = getPlace(placeId);
   if (!place) throw new Error('Place not found.');
 
-  const assets = await getAssets(place.assetIds);
-  if (!assets.length) throw new Error('This place has no saved images yet.');
+  place.aiState = 'working';
+  place.aiError = '';
+  saveState();
+  await render();
 
-  const systemPrompt = [
-    'You are analyzing storage-place photos for a retrieval validation PoC.',
-    'Return strict JSON only.',
-    'Do not invent unsupported specifics.',
-    'Focus on visible contextual cues that distinguish one place from another.',
-    'Use concise language and return arrays for cue lists.',
-  ].join(' ');
+  try {
+    const assets = await getAssets(place.assetIds);
+    if (!assets.length) throw new Error('This place has no saved images yet.');
 
-  const userText = `
+    const systemPrompt = [
+      'You are analyzing storage-place photos for a retrieval validation PoC.',
+      'Return strict JSON only.',
+      'Do not invent unsupported specifics.',
+      'Focus on visible contextual cues that distinguish one place from another.',
+      'Use concise language and return arrays for cue lists.',
+    ].join(' ');
+
+    const userText = `
 Return JSON with this shape:
 {
   "canonicalLabel": "...",
@@ -543,44 +577,51 @@ Return JSON with this shape:
 
 Place metadata:
 ${JSON.stringify(
-    {
-      id: place.id,
-      name: place.name,
-      placeType: place.placeType,
-      parentPlaceLabel: resolvePlaceName(place.parentPlaceId),
-      description: place.description,
-      varianceNotes: place.varianceNotes,
-    },
-    null,
-    2,
-  )}
+      {
+        id: place.id,
+        name: place.name,
+        placeType: place.placeType,
+        parentPlaceLabel: resolvePlaceName(place.parentPlaceId),
+        description: place.description,
+        varianceNotes: place.varianceNotes,
+      },
+      null,
+      2,
+    )}
 
 The images belong to the same place.
 Capture what would help later place matching from object-in-context photos.
 `;
 
-  const result = await callOpenAIJson({
-    systemPrompt,
-    userText,
-    imageEntries: assets.map((asset) => ({
-      label: `Place reference image, ${asset.captureType}`,
-      blob: asset.blob,
-    })),
-  });
+    const result = await callOpenAIJson({
+      systemPrompt,
+      userText,
+      imageEntries: assets.map((asset) => ({
+        label: `Place reference image, ${asset.captureType}`,
+        blob: asset.blob,
+      })),
+    });
 
-  place.aiSummary = {
-    promptVersion: PLACE_PROMPT_VERSION,
-    model: result.model,
-    createdAt: new Date().toISOString(),
-    rawText: result.rawText,
-    normalized: normalizePlaceSummary(result.parsed),
-  };
+    place.aiSummary = {
+      promptVersion: PLACE_PROMPT_VERSION,
+      model: result.model,
+      createdAt: new Date().toISOString(),
+      rawText: result.rawText,
+      normalized: normalizePlaceSummary(result.parsed),
+    };
+    place.aiState = 'done';
+    place.aiError = '';
 
-  saveState();
-  await render();
-
-  if (!silent) {
-    setBanner(`AI place memory saved for ${place.name}.`, 'success', 4000);
+    if (!silent) {
+      setBanner(`AI place memory saved for ${place.name}.`, 'success', 4000);
+    }
+  } catch (error) {
+    place.aiState = 'error';
+    place.aiError = error?.message || 'AI place analysis failed.';
+    throw error;
+  } finally {
+    saveState();
+    await render();
   }
 }
 
@@ -590,40 +631,46 @@ async function inferObject(objectId, { silent = false } = {}) {
   if (!object) throw new Error('Object not found.');
   if (!state.places.length) throw new Error('Map at least one place before running inference.');
 
-  const objectAssets = await getAssets(object.assetIds);
-  if (!objectAssets.length) throw new Error('This object has no saved images yet.');
+  object.aiState = 'working';
+  object.aiError = '';
+  saveState();
+  await render();
 
-  const knownPlaces = state.places.map((place) => ({
-    id: place.id,
-    name: place.name,
-    placeType: place.placeType,
-    parentPlaceLabel: resolvePlaceName(place.parentPlaceId),
-    manualDescription: place.description,
-    varianceNotes: place.varianceNotes,
-    aiSummary: place.aiSummary?.normalized || null,
-  }));
+  try {
+    const objectAssets = await getAssets(object.assetIds);
+    if (!objectAssets.length) throw new Error('This object has no saved images yet.');
 
-  const referenceImages = [];
-  for (const place of state.places) {
-    const refAssetId = place.assetIds?.[0];
-    if (!refAssetId) continue;
-    const refAsset = await getAsset(refAssetId);
-    if (!refAsset?.blob) continue;
-    referenceImages.push({
-      label: `Reference place image for ${place.id}, ${place.name}, ${refAsset.captureType}`,
-      blob: refAsset.blob,
-    });
-  }
+    const knownPlaces = state.places.map((place) => ({
+      id: place.id,
+      name: place.name,
+      placeType: place.placeType,
+      parentPlaceLabel: resolvePlaceName(place.parentPlaceId),
+      manualDescription: place.description,
+      varianceNotes: place.varianceNotes,
+      aiSummary: place.aiSummary?.normalized || null,
+    }));
 
-  const systemPrompt = [
-    'You are evaluating an object-in-context image against a known place-memory index for a retrieval PoC.',
-    'Return strict JSON only.',
-    'You must distinguish the object from the surrounding place context.',
-    'predictedPlaceId must be one of the supplied known place ids, or null if evidence is insufficient.',
-    'Use uncertainty honestly. Return alternative candidates when appropriate.',
-  ].join(' ');
+    const referenceImages = [];
+    for (const place of state.places) {
+      const refAssetId = place.assetIds?.[0];
+      if (!refAssetId) continue;
+      const refAsset = await getAsset(refAssetId);
+      if (!refAsset?.blob) continue;
+      referenceImages.push({
+        label: `Reference place image for ${place.id}, ${place.name}, ${refAsset.captureType}`,
+        blob: refAsset.blob,
+      });
+    }
 
-  const userText = `
+    const systemPrompt = [
+      'You are evaluating an object-in-context image against a known place-memory index for a retrieval PoC.',
+      'Return strict JSON only.',
+      'You must distinguish the object from the surrounding place context.',
+      'predictedPlaceId must be one of the supplied known place ids, or null if evidence is insufficient.',
+      'Use uncertainty honestly. Return alternative candidates when appropriate.',
+    ].join(' ');
+
+    const userText = `
 Return JSON with this shape:
 {
   "place": {
@@ -659,53 +706,60 @@ ${JSON.stringify(knownPlaces, null, 2)}
 
 OBJECT_RECORD:
 ${JSON.stringify(
-    {
-      name: object.name,
-      category: object.category,
-      notes: object.notes,
-      captureQuality: object.quality,
-    },
-    null,
-    2,
-  )}
+      {
+        name: object.name,
+        category: object.category,
+        notes: object.notes,
+        captureQuality: object.quality,
+      },
+      null,
+      2,
+    )}
 
 You will first see object images, then representative place images.
 Use both the object and the background context.
 `;
 
-  const result = await callOpenAIJson({
-    systemPrompt,
-    userText,
-    imageEntries: [
-      ...objectAssets.map((asset, index) => ({
-        label: `Object capture ${index + 1}, ${asset.captureType}`,
-        blob: asset.blob,
-      })),
-      ...referenceImages,
-    ],
-  });
+    const result = await callOpenAIJson({
+      systemPrompt,
+      userText,
+      imageEntries: [
+        ...objectAssets.map((asset, index) => ({
+          label: `Object capture ${index + 1}, ${asset.captureType}`,
+          blob: asset.blob,
+        })),
+        ...referenceImages,
+      ],
+    });
 
-  object.inference = {
-    promptVersion: OBJECT_PROMPT_VERSION,
-    model: result.model,
-    createdAt: new Date().toISOString(),
-    rawText: result.rawText,
-    normalized: normalizeObjectInference(result.parsed),
-  };
+    object.inference = {
+      promptVersion: OBJECT_PROMPT_VERSION,
+      model: result.model,
+      createdAt: new Date().toISOString(),
+      rawText: result.rawText,
+      normalized: normalizeObjectInference(result.parsed),
+    };
+    object.aiState = 'done';
+    object.aiError = '';
 
-  saveState();
-  await render();
-
-  if (!silent) {
-    const predictedPlaceId = object.inference.normalized.place.predictedPlaceId;
-    const correctPlace = predictedPlaceId && predictedPlaceId === object.placeId;
-    setBanner(
-      correctPlace
-        ? `Inference complete, it picked the right place for ${object.name}.`
-        : `Inference complete for ${object.name}. Review the result and ambiguity flags.`,
-      correctPlace ? 'success' : 'warn',
-      4500,
-    );
+    if (!silent) {
+      const predictedPlaceId = object.inference.normalized.place.predictedPlaceId;
+      const correctPlace = predictedPlaceId && predictedPlaceId === object.placeId;
+      setBanner(
+        correctPlace
+          ? `Inference complete, it picked the right place for ${object.name}.`
+          : `Inference complete for ${object.name}. Review the result and ambiguity flags.`,
+        correctPlace ? 'success' : 'warn',
+        4500,
+      );
+    }
+  } catch (error) {
+    object.aiState = 'error';
+    object.aiError = error?.message || 'AI inference failed.';
+    throw error;
+  } finally {
+    saveState();
+    await render();
   }
 }
 
@@ -713,7 +767,6 @@ async function callOpenAIJson({ systemPrompt, userText, imageEntries = [] }) {
   const apiKey = getApiKey();
   if (!apiKey) throw new Error('No OpenAI key is set in this browser.');
 
-  const model = settings.model || DEFAULT_MODEL;
   const content = [{ type: 'text', text: userText.trim() }];
 
   for (const entry of imageEntries) {
@@ -726,39 +779,26 @@ async function callOpenAIJson({ systemPrompt, userText, imageEntries = [] }) {
     });
   }
 
-  const basePayload = {
-    model,
-    temperature: 0.2,
-    max_tokens: 1800,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content },
-    ],
-  };
+  const modelCandidates = buildModelCandidates();
+  let lastError = null;
 
-  let payload = {
-    ...basePayload,
-    response_format: { type: 'json_object' },
-  };
+  for (const model of modelCandidates) {
+    const basePayload = {
+      model,
+      temperature: 0.2,
+      max_tokens: 1800,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content },
+      ],
+    };
 
-  let response;
-  try {
-    response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(payload),
-    });
-  } catch (error) {
-    throw new Error('Network or browser error while contacting OpenAI. Check connectivity, key, and browser support.');
-  }
+    let payload = {
+      ...basePayload,
+      response_format: { type: 'json_object' },
+    };
 
-  let data = await safeJson(response);
-
-  if (!response.ok && mentionsResponseFormatIssue(data)) {
-    payload = { ...basePayload };
+    let response;
     try {
       response = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
@@ -771,24 +811,48 @@ async function callOpenAIJson({ systemPrompt, userText, imageEntries = [] }) {
     } catch (error) {
       throw new Error('Network or browser error while contacting OpenAI. Check connectivity, key, and browser support.');
     }
-    data = await safeJson(response);
+
+    let data = await safeJson(response);
+
+    if (!response.ok && mentionsResponseFormatIssue(data)) {
+      payload = { ...basePayload };
+      try {
+        response = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify(payload),
+        });
+      } catch (error) {
+        throw new Error('Network or browser error while contacting OpenAI. Check connectivity, key, and browser support.');
+      }
+      data = await safeJson(response);
+    }
+
+    if (!response.ok) {
+      lastError = new Error(describeOpenAIError(data, response.status));
+      if (shouldTryAnotherModel(data, response.status, model, modelCandidates)) {
+        continue;
+      }
+      throw lastError;
+    }
+
+    const rawText = extractContentText(data?.choices?.[0]?.message?.content);
+    const parsed = parseJsonLoose(rawText);
+    if (!parsed) {
+      throw new Error('OpenAI returned a response, but I could not parse valid JSON from it.');
+    }
+
+    return {
+      model: data?.model || model,
+      rawText,
+      parsed,
+    };
   }
 
-  if (!response.ok) {
-    throw new Error(describeOpenAIError(data, response.status));
-  }
-
-  const rawText = extractContentText(data?.choices?.[0]?.message?.content);
-  const parsed = parseJsonLoose(rawText);
-  if (!parsed) {
-    throw new Error('OpenAI returned a response, but I could not parse valid JSON from it.');
-  }
-
-  return {
-    model: data?.model || model,
-    rawText,
-    parsed,
-  };
+  throw lastError || new Error('No compatible OpenAI model worked for this request.');
 }
 
 function mentionsResponseFormatIssue(payload) {
@@ -800,6 +864,26 @@ function describeOpenAIError(payload, status) {
   const message = safeString(payload?.error?.message);
   if (message) return message;
   return `OpenAI request failed with status ${status}.`;
+}
+
+function buildModelCandidates() {
+  return Array.from(new Set([
+    safeString(settings.model) || DEFAULT_MODEL,
+    DEFAULT_MODEL,
+    'gpt-4o-mini',
+    'gpt-4.1-mini',
+  ].filter(Boolean)));
+}
+
+function shouldTryAnotherModel(payload, status, model, modelCandidates) {
+  if (model === modelCandidates[modelCandidates.length - 1]) return false;
+  const message = safeString(payload?.error?.message).toLowerCase();
+  const code = safeString(payload?.error?.code).toLowerCase();
+  if (code === 'model_not_found') return true;
+  if (message.includes('model') && (message.includes('not found') || message.includes('does not exist') || message.includes('not have access') || message.includes('access to') || message.includes('unavailable'))) {
+    return true;
+  }
+  return status === 404;
 }
 
 async function safeJson(response) {
@@ -1147,6 +1231,8 @@ function loadDemoData() {
         assetIds: [],
         status: 'mapped',
         createdAt: new Date().toISOString(),
+        aiState: 'done',
+        aiError: '',
         aiSummary: {
           promptVersion: PLACE_PROMPT_VERSION,
           model: settings.model || DEFAULT_MODEL,
@@ -1177,6 +1263,8 @@ function loadDemoData() {
         assetIds: [],
         status: 'mapped',
         createdAt: new Date().toISOString(),
+        aiState: 'done',
+        aiError: '',
         aiSummary: {
           promptVersion: PLACE_PROMPT_VERSION,
           model: settings.model || DEFAULT_MODEL,
@@ -1209,6 +1297,8 @@ function loadDemoData() {
         assetIds: [],
         status: 'captured',
         createdAt: new Date().toISOString(),
+        aiState: 'done',
+        aiError: '',
         inference: {
           promptVersion: OBJECT_PROMPT_VERSION,
           model: settings.model || DEFAULT_MODEL,
@@ -1257,6 +1347,8 @@ function loadDemoData() {
         assetIds: [],
         status: 'captured',
         createdAt: new Date().toISOString(),
+        aiState: 'done',
+        aiError: '',
         inference: {
           promptVersion: OBJECT_PROMPT_VERSION,
           model: settings.model || DEFAULT_MODEL,
@@ -1481,11 +1573,18 @@ async function renderPlacesList(token) {
     if (token !== renderToken) return;
     const assets = await getAssets(place.assetIds);
     const ai = place.aiSummary?.normalized || null;
+    const aiStateTag = place.aiState === 'working'
+      ? '<span class="tag warn">AI running...</span>'
+      : place.aiError
+        ? '<span class="tag bad">AI failed</span>'
+        : ai
+          ? '<span class="tag good">AI analyzed</span>'
+          : '<span class="tag warn">AI pending</span>';
     const tags = [
       `<span class="tag">${escapeHtml(place.placeType || 'place')}</span>`,
       place.parentPlaceId ? `<span class="tag">Parent: ${escapeHtml(resolvePlaceName(place.parentPlaceId))}</span>` : '',
       `<span class="tag">Shots: ${assets.length}</span>`,
-      ai ? `<span class="tag good">AI analyzed</span>` : '<span class="tag warn">AI pending</span>',
+      aiStateTag,
     ].filter(Boolean).join('');
 
     const aiBlock = ai
@@ -1502,7 +1601,12 @@ async function renderPlacesList(token) {
           ${renderListBlock('Likely confusions', ai.likelyConfusions)}
         </div>
       `
-      : '<p class="caption">Run AI place analysis after capturing the photos.</p>';
+      : `
+        <div>
+          <p class="caption">Run AI place analysis after capturing the photos.</p>
+          ${place.aiError ? `<p class="caption error-text">Last AI error: ${escapeHtml(place.aiError)}</p>` : ''}
+        </div>
+      `;
 
     cards.push(`
       <article class="entity-card">
@@ -1539,14 +1643,19 @@ async function renderObjectsList(token) {
     const inference = object.inference?.normalized || null;
     const predictedPlaceId = inference?.place?.predictedPlaceId || null;
     const placeCorrect = predictedPlaceId ? predictedPlaceId === object.placeId : null;
+    const inferenceStateTag = object.aiState === 'working'
+      ? '<span class="tag warn">AI running...</span>'
+      : object.aiError
+        ? '<span class="tag bad">AI failed</span>'
+        : inference
+          ? `<span class="tag ${placeCorrect ? 'good' : 'warn'}">${placeCorrect ? 'Top-1 place hit' : 'Review prediction'}</span>`
+          : '<span class="tag warn">Inference pending</span>';
 
     const tags = [
       object.category ? `<span class="tag">${escapeHtml(object.category)}</span>` : '<span class="tag">uncategorized</span>',
       `<span class="tag">Place: ${escapeHtml(resolvePlaceName(object.placeId) || 'Unknown')}</span>`,
       `<span class="tag">Quality: ${escapeHtml(object.quality)}</span>`,
-      inference
-        ? `<span class="tag ${placeCorrect ? 'good' : 'warn'}">${placeCorrect ? 'Top-1 place hit' : 'Review prediction'}</span>`
-        : '<span class="tag warn">Inference pending</span>',
+      inferenceStateTag,
     ].join('');
 
     const inferenceBlock = inference
@@ -1570,7 +1679,12 @@ async function renderObjectsList(token) {
           ${inference.explanation ? `<p>${escapeHtml(inference.explanation)}</p>` : ''}
         </div>
       `
-      : '<p class="caption">Run AI inference after Stage 1 place mapping is ready.</p>';
+      : `
+        <div>
+          <p class="caption">Run AI inference after Stage 1 place mapping is ready.</p>
+          ${object.aiError ? `<p class="caption error-text">Last AI error: ${escapeHtml(object.aiError)}</p>` : ''}
+        </div>
+      `;
 
     cards.push(`
       <article class="entity-card">
