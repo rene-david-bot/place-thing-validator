@@ -43,6 +43,7 @@ if (!settings.deviceSessionId) {
 let sessionApiKey = settings.rememberKey ? settings.apiKey : '';
 let flashTimer = null;
 let renderToken = 0;
+let objectPrefillDraft = null;
 const liveObjectUrls = [];
 
 const refs = {
@@ -60,6 +61,7 @@ const refs = {
   placeForm: document.getElementById('placeForm'),
   objectForm: document.getElementById('objectForm'),
   challengeForm: document.getElementById('challengeForm'),
+  prefillObjectBtn: document.getElementById('prefillObjectBtn'),
   exportBtn: document.getElementById('exportBtn'),
   resetBtn: document.getElementById('resetBtn'),
   copyDebugLogBtn: document.getElementById('copyDebugLogBtn'),
@@ -122,6 +124,9 @@ function bindEvents() {
 
   document.querySelectorAll('input[type="file"]').forEach((input) => {
     input.addEventListener('change', () => {
+      if (input.closest('#objectForm')) {
+        clearObjectPrefillDraft();
+      }
       void updatePreviewForInput(input);
     });
   });
@@ -137,6 +142,9 @@ function bindEvents() {
   });
   refs.objectForm.addEventListener('submit', (event) => {
     void handleObjectSubmit(event);
+  });
+  refs.prefillObjectBtn?.addEventListener('click', () => {
+    void runButtonTask(refs.prefillObjectBtn, refs.prefillObjectBtn.textContent, () => prefillObjectFromForm());
   });
   refs.challengeForm.addEventListener('submit', handleChallengeSubmit);
   refs.exportBtn.addEventListener('click', () => {
@@ -417,22 +425,219 @@ async function handlePlaceSubmit(event) {
   setBanner('Mapped place saved. You can analyze it with AI now.', 'success', 3500);
 }
 
+function clearObjectPrefillDraft() {
+  objectPrefillDraft = null;
+}
+
+function applyObjectPrefillDraft(draft) {
+  if (!draft) return;
+  refs.objectForm.elements.name.value = draft.object.predictedLabel || '';
+  refs.objectForm.elements.category.value = draft.object.category || '';
+  refs.objectForm.elements.notes.value = [
+    ...(draft.object.attributes || []),
+    safeString(draft.object.notes),
+  ].filter(Boolean).join(', ');
+  refs.objectForm.elements.placeId.value = draft.place.predictedPlaceId || '';
+}
+
+function buildInferenceFromPrefillDraft(draft) {
+  if (!draft) return null;
+  return {
+    promptVersion: OBJECT_PROMPT_VERSION,
+    contextMode: draft.blindMode ? 'blind' : 'assisted',
+    model: draft.model,
+    createdAt: draft.createdAt,
+    rawText: draft.rawText,
+    normalized: {
+      place: {
+        predictedPlaceId: draft.place.predictedPlaceId,
+        predictedLabel: draft.place.predictedLabel,
+        candidates: draft.place.predictedPlaceId
+          ? [{
+              placeId: draft.place.predictedPlaceId,
+              label: draft.place.predictedLabel || resolvePlaceName(draft.place.predictedPlaceId) || '',
+              confidence: draft.place.confidence,
+            }]
+          : [],
+      },
+      object: {
+        predictedLabel: draft.object.predictedLabel,
+        category: draft.object.category,
+        candidates: draft.object.predictedLabel
+          ? [{ label: draft.object.predictedLabel, confidence: draft.object.confidence }]
+          : [],
+      },
+      scene: {
+        lighting: '',
+        clutter: '',
+        occlusion: '',
+      },
+      retrieval: {
+        confidenceOverall: draft.overall.confidence || Math.max(draft.object.confidence, draft.place.confidence),
+        ambiguityFlags: draft.overall.questions || [],
+        shouldHedge: Boolean(draft.overall.needsUserConfirmation),
+        evidenceSummary: draft.place.reason || draft.object.notes || '',
+      },
+      explanation: draft.place.reason || draft.object.notes || '',
+    },
+  };
+}
+
+async function prefillObjectFromForm() {
+  requireApiKeyOrJump();
+
+  const contextFile = refs.objectForm.elements.contextFile.files[0];
+  if (!contextFile) {
+    throw new Error('Capture the object-in-context photo first.');
+  }
+
+  const blindMode = isBlindModeEnabled();
+  const alternateFile = refs.objectForm.elements.alternateObjectFile.files[0] || null;
+  const knownPlaces = buildKnownPlacesForInference(blindMode);
+  const referenceImages = [];
+
+  for (const place of state.places) {
+    const refAssetId = place.assetIds?.[0];
+    if (!refAssetId) continue;
+    const refAsset = await getAsset(refAssetId);
+    if (!refAsset?.blob) continue;
+    referenceImages.push({
+      label: blindMode
+        ? `Reference place image for ${place.id}, ${refAsset.captureType}`
+        : `Reference place image for ${place.id}, ${place.name}, ${refAsset.captureType}`,
+      blob: refAsset.blob,
+    });
+  }
+
+  const systemPrompt = [
+    'You are assisting with a one-photo object deposit workflow for a storage retrieval app.',
+    'Return strict JSON only.',
+    'Infer the likely object label, category, useful attributes, and whether the surrounding place matches one of the known places.',
+    'If the place is not known or confidence is low, set predictedPlaceId to null and shouldCapturePlaceFirst to true.',
+    'Use uncertainty honestly and ask for clarification when confidence is low.',
+    blindMode
+      ? 'Blind mode is on. Human object labels, place labels, and notes are intentionally withheld. Use the images and blind place-memory cues only.'
+      : 'You may use the supplied human metadata as supporting context.',
+  ].join(' ');
+
+  const userText = `
+Return JSON with this shape:
+{
+  "object": {
+    "predictedLabel": "...",
+    "category": "...",
+    "attributes": ["..."],
+    "notes": "...",
+    "confidence": 0.0
+  },
+  "place": {
+    "predictedPlaceId": "place_123 or null",
+    "predictedLabel": "...",
+    "confidence": 0.0,
+    "knownPlace": true,
+    "shouldCapturePlaceFirst": false,
+    "reason": "..."
+  },
+  "overall": {
+    "confidence": 0.0,
+    "needsUserConfirmation": true,
+    "questions": ["..."]
+  }
+}
+
+KNOWN_PLACES_JSON:
+${JSON.stringify(knownPlaces, null, 2)}
+
+OBJECT_CAPTURE_CONTEXT:
+${JSON.stringify(
+      {
+        captureQuality: safeString(refs.objectForm.elements.quality.value) || 'good',
+        mappedPlaceCount: state.places.length,
+        blindMode,
+      },
+      null,
+      2,
+    )}
+
+You will first see the object-in-context photo, then optional alternate object views, then representative place images.
+`;
+
+  const result = await callOpenAIJson({
+    systemPrompt,
+    userText,
+    imageEntries: [
+      { label: 'Object capture in context', blob: contextFile },
+      ...(alternateFile ? [{ label: 'Alternate object angle', blob: alternateFile }] : []),
+      ...referenceImages,
+    ],
+  });
+
+  const draft = normalizeObjectPrefill(result.parsed);
+  objectPrefillDraft = {
+    ...draft,
+    blindMode,
+    model: result.model,
+    rawText: result.rawText,
+    createdAt: new Date().toISOString(),
+  };
+
+  applyObjectPrefillDraft(objectPrefillDraft);
+
+  const placeName = resolvePlaceName(draft.place.predictedPlaceId) || draft.place.predictedLabel || 'this place';
+  const lowConfidence = draft.overall.needsUserConfirmation
+    || draft.object.confidence < 0.65
+    || draft.place.confidence < 0.6;
+
+  appendLog('object.prefill.success', `AI prefill finished for ${draft.object.predictedLabel || 'object capture'}.`, {
+    model: result.model,
+    blindMode,
+    predictedPlaceId: draft.place.predictedPlaceId,
+    shouldCapturePlaceFirst: draft.place.shouldCapturePlaceFirst,
+    overallConfidence: draft.overall.confidence,
+  });
+
+  await render();
+
+  if (!draft.place.predictedPlaceId || draft.place.shouldCapturePlaceFirst) {
+    setBanner('I am not sure this place is mapped yet. Capture the place first or choose a mapped place before saving the object.', 'warn', 7000);
+  } else if (lowConfidence) {
+    setBanner(`I prefilled the object and place, but I am not fully sure. Please review ${draft.object.predictedLabel || 'the object'} and ${placeName} before saving.`, 'warn', 7000);
+  } else {
+    setBanner(`AI prefilled ${draft.object.predictedLabel || 'the object'} in ${placeName}. Review it and save when ready.`, 'success', 5000);
+  }
+
+  return objectPrefillDraft;
+}
+
 async function handleObjectSubmit(event) {
   event.preventDefault();
   if (!ensureRun()) return;
-  if (!state.places.length) {
-    setBanner('Map at least one place before capturing objects.', 'warn', 5000);
-    navigate('places');
-    return;
-  }
 
-  const form = new FormData(refs.objectForm);
   const contextFile = refs.objectForm.elements.contextFile.files[0];
   if (!contextFile) {
     setBanner('Please capture the object-in-context photo before saving the object.', 'error', 5000);
     return;
   }
 
+  const nameValue = safeString(refs.objectForm.elements.name.value);
+  const placeIdValue = safeString(refs.objectForm.elements.placeId.value);
+
+  if (!nameValue || !placeIdValue) {
+    try {
+      await prefillObjectFromForm();
+      if (!safeString(refs.objectForm.elements.placeId.value)) {
+        setBanner('The object is prefilled, but I still do not know the place. Capture the place first or choose it manually before saving.', 'warn', 7000);
+      } else {
+        setBanner('The object is prefilled. Review the suggestion, adjust if needed, then tap Save object again.', 'success', 6000);
+      }
+    } catch (error) {
+      console.error(error);
+      setBanner(error?.message || 'AI prefill failed.', 'error', 6000);
+    }
+    return;
+  }
+
+  const form = new FormData(refs.objectForm);
   const objectId = uid('object');
   const captureSpecs = [
     ['contextFile', 'context'],
@@ -453,34 +658,111 @@ async function handleObjectSubmit(event) {
     assetIds.push(asset.id);
   }
 
+  const savedName = safeString(form.get('name'));
+  const savedPlaceId = safeString(form.get('placeId'));
+  const usedAiPrefill = Boolean(objectPrefillDraft);
+  const savedInference = buildInferenceFromPrefillDraft(objectPrefillDraft);
+
   state.objects.push({
     id: objectId,
     runId: state.run.id,
-    name: safeString(form.get('name')),
+    name: savedName,
     category: safeString(form.get('category')),
-    placeId: safeString(form.get('placeId')),
+    placeId: savedPlaceId,
     quality: safeString(form.get('quality')) || 'good',
     notes: safeString(form.get('notes')),
     assetIds,
     status: 'captured',
     createdAt: new Date().toISOString(),
-    inference: null,
-    aiState: 'idle',
+    inference: savedInference,
+    aiState: usedAiPrefill ? 'done' : 'idle',
     aiError: '',
   });
 
   refs.objectForm.reset();
   clearFormPreviews(refs.objectForm);
+  clearObjectPrefillDraft();
   saveState();
-  appendLog('object.save', `Saved object ${safeString(form.get('name'))}.`, { imageCount: assetIds.length, placeId: safeString(form.get('placeId')) });
+  appendLog('object.save', `Saved object ${savedName}.`, {
+    imageCount: assetIds.length,
+    placeId: savedPlaceId,
+    usedAiPrefill,
+  });
   await render();
-  setBanner('Object capture saved. You can run AI inference now.', 'success', 3500);
+  setBanner('Object saved. The AI-prefilled label and place can still be re-run later if needed.', 'success', 4000);
 }
 
-function handleChallengeSubmit(event) {
+async function buildChallengeQueryProfile(queryText) {
+  const fallback = {
+    source: 'local',
+    paraphrase: queryText,
+    detectedLanguage: '',
+    tokens: tokenize(queryText),
+    objectTerms: [],
+    placeTerms: [],
+    attributes: [],
+    synonyms: [],
+  };
+
+  if (!getApiKey()) return fallback;
+
+  try {
+    const result = await callOpenAIJson({
+      systemPrompt: [
+        'You turn retrieval queries in any language into language-agnostic search hints for a storage app.',
+        'Return strict JSON only.',
+        'Keep it concise and practical for matching objects, places, and visible attributes.',
+      ].join(' '),
+      userText: `
+Return JSON with this shape:
+{
+  "paraphrase": "...",
+  "detectedLanguage": "...",
+  "objectTerms": ["..."],
+  "placeTerms": ["..."],
+  "attributes": ["..."],
+  "synonyms": ["..."]
+}
+
+QUERY:
+${queryText}
+`,
+    });
+
+    const expanded = normalizeChallengeQueryExpansion(result.parsed, queryText);
+    const mergedTokens = Array.from(new Set([
+      ...tokenize(queryText),
+      ...tokenize(expanded.paraphrase),
+      ...tokenize(expanded.objectTerms.join(' ')),
+      ...tokenize(expanded.placeTerms.join(' ')),
+      ...tokenize(expanded.attributes.join(' ')),
+      ...tokenize(expanded.synonyms.join(' ')),
+    ]));
+
+    appendLog('challenge.query_expand', 'Expanded challenge query with AI.', {
+      model: result.model,
+      detectedLanguage: expanded.detectedLanguage,
+      tokenCount: mergedTokens.length,
+    });
+
+    return {
+      ...expanded,
+      source: 'ai',
+      model: result.model,
+      tokens: mergedTokens,
+    };
+  } catch (error) {
+    appendLog('challenge.query_expand_error', 'AI query expansion failed, falling back to local matching.', {
+      error: error?.message || 'Unknown expansion error',
+    }, 'warn');
+    return fallback;
+  }
+}
+
+async function handleChallengeSubmit(event) {
   event.preventDefault();
   if (!state.objects.length) {
-    setBanner('Capture at least one object before running challenge mode.', 'warn', 4000);
+    setBanner('Capture at least one object before searching.', 'warn', 4000);
     navigate('objects');
     return;
   }
@@ -490,26 +772,28 @@ function handleChallengeSubmit(event) {
   const queryType = safeString(form.get('queryType')) || 'joint';
   const expectedObjectId = safeString(form.get('expectedObjectId')) || null;
   const expectedPlaceId = safeString(form.get('expectedPlaceId')) || null;
+  const queryProfile = await buildChallengeQueryProfile(queryText);
 
-  const result = runChallenge(queryText, queryType, expectedObjectId, expectedPlaceId);
+  const result = runChallenge(queryText, queryType, expectedObjectId, expectedPlaceId, queryProfile);
   state.queryTests.push(result);
   saveState();
   appendLog('challenge.run', `Ran ${queryType} challenge.`, {
     queryText,
+    querySource: queryProfile.source,
     correct: result.correct,
     confidence: result.confidence,
     topLabel: result.rankedResults?.[0]?.label || null,
     topObjectId: result.topObjectId,
     topPlaceId: result.topPlaceId,
   });
-  void render();
+  await render();
 
   if (result.correct === true) {
-    setBanner('Challenge recorded, top result matches the expected truth.', 'success', 3500);
+    setBanner('Search recorded, top result matches the expected truth.', 'success', 3500);
   } else if (result.correct === false) {
-    setBanner('Challenge recorded, the top result missed the expected truth.', 'warn', 4000);
+    setBanner('Search recorded, the top result missed the expected truth.', 'warn', 4000);
   } else {
-    setBanner('Challenge recorded.', 'success', 3000);
+    setBanner(queryProfile.source === 'ai' ? 'Search recorded with AI query understanding.' : 'Search recorded.', 'success', 3000);
   }
 }
 
@@ -1133,6 +1417,46 @@ function normalizeObjectInference(raw) {
   };
 }
 
+function normalizeObjectPrefill(raw) {
+  const predictedPlaceId = resolvePlaceIdFromAny(
+    raw?.place?.predictedPlaceId || raw?.place?.placeId || raw?.place?.id || raw?.place?.predictedLabel,
+  );
+
+  return {
+    object: {
+      predictedLabel: safeString(raw?.object?.predictedLabel || raw?.object?.label || ''),
+      category: safeString(raw?.object?.category || raw?.category || ''),
+      attributes: normalizeStringArray(raw?.object?.attributes || raw?.attributes),
+      notes: safeString(raw?.object?.notes || raw?.notes || ''),
+      confidence: normalizeConfidence(raw?.object?.confidence),
+    },
+    place: {
+      predictedPlaceId,
+      predictedLabel: safeString(raw?.place?.predictedLabel || resolvePlaceName(predictedPlaceId) || ''),
+      confidence: normalizeConfidence(raw?.place?.confidence),
+      knownPlace: raw?.place?.knownPlace !== false && Boolean(predictedPlaceId),
+      shouldCapturePlaceFirst: Boolean(raw?.place?.shouldCapturePlaceFirst || !predictedPlaceId),
+      reason: safeString(raw?.place?.reason || ''),
+    },
+    overall: {
+      confidence: normalizeConfidence(raw?.overall?.confidence || raw?.confidenceOverall),
+      needsUserConfirmation: Boolean(raw?.overall?.needsUserConfirmation || raw?.shouldHedge),
+      questions: normalizeStringArray(raw?.overall?.questions || raw?.questions),
+    },
+  };
+}
+
+function normalizeChallengeQueryExpansion(raw, queryText) {
+  return {
+    paraphrase: safeString(raw?.paraphrase || raw?.englishParaphrase || queryText),
+    detectedLanguage: safeString(raw?.detectedLanguage || raw?.language || ''),
+    objectTerms: normalizeStringArray(raw?.objectTerms),
+    placeTerms: normalizeStringArray(raw?.placeTerms),
+    attributes: normalizeStringArray(raw?.attributes),
+    synonyms: normalizeStringArray(raw?.synonyms),
+  };
+}
+
 function normalizePlaceCandidates(value) {
   if (!Array.isArray(value)) return [];
   return value
@@ -1177,8 +1501,11 @@ function normalizeConfidence(value) {
   return clamp(number, 0, 1);
 }
 
-function runChallenge(queryText, queryType, expectedObjectId, expectedPlaceId) {
-  const tokens = tokenize(queryText);
+function runChallenge(queryText, queryType, expectedObjectId, expectedPlaceId, queryProfile = null) {
+  const tokens = Array.from(new Set([
+    ...tokenize(queryText),
+    ...(Array.isArray(queryProfile?.tokens) ? queryProfile.tokens : []),
+  ]));
   const rankedResults = state.objects
     .map((object) => scoreObjectForQuery(object, tokens, queryText, queryType))
     .sort((a, b) => b.score - a.score)
@@ -1221,6 +1548,7 @@ function runChallenge(queryText, queryType, expectedObjectId, expectedPlaceId) {
     trustScore,
     correct,
     createdAt: new Date().toISOString(),
+    queryProfile,
   };
 }
 
@@ -1345,6 +1673,7 @@ async function resetAllData() {
   refs.placeForm.reset();
   refs.objectForm.reset();
   refs.challengeForm.reset();
+  clearObjectPrefillDraft();
   clearFormPreviews(refs.placeForm);
   clearFormPreviews(refs.objectForm);
   navigate('overview');
@@ -1554,6 +1883,7 @@ function loadDemoData() {
   refs.placeForm.reset();
   refs.objectForm.reset();
   refs.challengeForm.reset();
+  clearObjectPrefillDraft();
   clearFormPreviews(refs.placeForm);
   clearFormPreviews(refs.objectForm);
   navigate('results');
@@ -1886,10 +2216,14 @@ function renderChallengeResult() {
       <div>
         <h4>${escapeHtml(latest.queryText)}</h4>
         <p>${escapeHtml(latest.queryType)} query</p>
+        ${latest.queryProfile?.source === 'ai' && latest.queryProfile?.paraphrase
+          ? `<p class="caption">AI query understanding: ${escapeHtml(latest.queryProfile.paraphrase)}</p>`
+          : ''}
       </div>
       <div class="tag-row">
         <span class="tag">Confidence ${(latest.confidence * 100).toFixed(0)}%</span>
         <span class="tag">Trust ${latest.trustScore}/5</span>
+        <span class="tag">${latest.queryProfile?.source === 'ai' ? 'AI query understanding' : 'Local query matching'}</span>
         ${latest.correct === true ? '<span class="tag good">Correct</span>' : ''}
         ${latest.correct === false ? '<span class="tag warn">Missed expected truth</span>' : ''}
       </div>

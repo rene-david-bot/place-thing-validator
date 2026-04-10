@@ -8,7 +8,7 @@
       name="description"
       content="Mobile-friendly PoC for mapping places, capturing objects in context, and testing place-aware retrieval with user-supplied OpenAI API access."
     />
-    <link rel="stylesheet" href="styles.css?v=20260410-1332" />
+    <link rel="stylesheet" href="styles.css?v=20260410-1356" />
   </head>
   <body>
     <div class="app-shell">
@@ -47,7 +47,7 @@
             <li data-step="run">Create run</li>
             <li data-step="places">Stage 1, map places</li>
             <li data-step="objects">Stage 2, capture objects</li>
-            <li data-step="challenges">Challenge mode</li>
+            <li data-step="challenges">Search</li>
             <li data-step="results">Results</li>
           </ol>
 
@@ -159,9 +159,9 @@
                     </ul>
                   </article>
                   <article>
-                    <h4>Challenge mode</h4>
+                    <h4>Search</h4>
                     <ul>
-                      <li>Run retrieval queries against the captured dataset</li>
+                      <li>Search the captured dataset with natural-language descriptions</li>
                       <li>Score ranked results against expected truth</li>
                       <li>Review whether the concept is good enough for MVP</li>
                     </ul>
@@ -358,27 +358,27 @@
               </div>
               <div class="hero-actions compact">
                 <button id="inferAllObjectsBtn" class="ghost" type="button">Infer all objects</button>
-                <button class="ghost" data-nav="challenges">Go to challenge mode</button>
+                <button class="ghost" data-nav="challenges">Go to search</button>
               </div>
             </div>
 
             <div class="grid two">
               <form id="objectForm" class="stack-lg subcard">
-                <h3>Add object capture</h3>
+                <h3>Quick save object</h3>
 
                 <label>
-                  Object name
-                  <input name="name" placeholder="Black cable tester" required />
+                  Object name (AI can prefill)
+                  <input name="name" placeholder="Headphone box" />
                 </label>
 
                 <label>
-                  Category
-                  <input name="category" placeholder="electronics tool" />
+                  Category / type
+                  <input name="category" placeholder="electronics accessory" />
                 </label>
 
                 <label>
-                  Actual place
-                  <select name="placeId" id="objectPlaceSelect" required>
+                  Place (AI can prefill)
+                  <select name="placeId" id="objectPlaceSelect">
                     <option value="">Choose a mapped place</option>
                   </select>
                 </label>
@@ -395,11 +395,11 @@
                 </label>
 
                 <label>
-                  Notes
+                  Attributes / notes
                   <textarea
                     name="notes"
                     rows="3"
-                    placeholder="What makes this object tricky, repeated, hidden, similar, or easy to confuse?"
+                    placeholder="AI can prefill visible attributes, materials, colors, or ambiguity notes. You can edit before saving."
                   ></textarea>
                 </label>
 
@@ -428,17 +428,25 @@
                   </label>
                 </div>
 
-                <button type="submit" class="primary">Save object capture</button>
+                <div class="button-row align-left">
+                  <button type="button" class="ghost" id="prefillObjectBtn">AI prefill</button>
+                  <button type="submit" class="primary">Save object</button>
+                </div>
+
+                <p class="fine-print">
+                  Intended flow: take one context photo, let AI prefill object + place + attributes,
+                  adjust anything if needed, then save.
+                </p>
               </form>
 
               <div class="subcard stack-lg">
                 <div>
-                  <h3>Stage 2 guidance</h3>
+                  <h3>Quick-save guidance</h3>
                   <ul class="hint-list">
-                    <li>Keep the object visible, but do not crop out the surroundings.</li>
-                    <li>Include shelf edges, drawer context, neighboring tools, or labels.</li>
-                    <li>If the object is small, add a second angle instead of an extreme crop.</li>
-                    <li>Use AI inference only after Stage 1 has enough mapped places.</li>
+                    <li>Start with one photo that shows the object and enough of the surrounding place.</li>
+                    <li>Use AI prefill first, then edit the suggested object name, place, and attributes if needed.</li>
+                    <li>If the app is unsure about the place, map the place first instead of forcing a wrong save.</li>
+                    <li>Later search should work from natural descriptions, not exact labels.</li>
                   </ul>
                 </div>
 
@@ -450,10 +458,11 @@
           <section id="challenges" class="panel card">
             <div class="panel-head">
               <div>
-                <h2>Challenge mode</h2>
+                <h2>Search</h2>
                 <p>
-                  Run retrieval queries against the captured dataset and score whether the
-                  ranked result is trustworthy enough for a real MVP.
+                  Describe what you are looking for in natural language, let the app search
+                  the captured dataset, and score whether the ranked result is trustworthy
+                  enough for a real MVP.
                 </p>
               </div>
               <button class="ghost" data-nav="results">Go to results</button>
@@ -461,13 +470,13 @@
 
             <div class="grid two">
               <form id="challengeForm" class="stack-lg subcard">
-                <h3>Run retrieval challenge</h3>
+                <h3>Describe what you are looking for</h3>
 
                 <label>
-                  Query text
+                  Search text (any language)
                   <input
                     name="queryText"
-                    placeholder="Find the black cable tester from the electronics cabinet"
+                    placeholder="black headphones case near my desk, or German like schwarze Kopfhörerbox"
                     required
                   />
                 </label>
@@ -497,7 +506,7 @@
                   </select>
                 </label>
 
-                <button type="submit" class="primary">Run challenge</button>
+                <button type="submit" class="primary">Search now</button>
               </form>
 
               <div class="subcard stack-lg">
@@ -565,6 +574,6 @@
       </main>
     </div>
 
-    <script src="script.js?v=20260410-1332"></script>
+    <script src="script.js?v=20260410-1356"></script>
   </body>
 </html>
