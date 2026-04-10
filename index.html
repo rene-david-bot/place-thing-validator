@@ -6,7 +6,7 @@
     <title>Place + Thing Validator</title>
     <meta
       name="description"
-      content="A guided two-phase multimodal validation PoC for mapping places, capturing objects in context, and testing retrieval quality."
+      content="Mobile-friendly PoC for mapping places, capturing objects in context, and testing place-aware retrieval with user-supplied OpenAI API access."
     />
     <link rel="stylesheet" href="styles.css" />
   </head>
@@ -17,15 +17,27 @@
           <p class="eyebrow">Dave's Daily Demo</p>
           <h1>Place + Thing Validator</h1>
           <p class="subtitle">
-            A two-phase PoC to validate whether place memory improves object retrieval.
+            A real browser-based PoC for place mapping, object-in-context capture,
+            OpenAI-powered inference, and retrieval testing.
           </p>
         </div>
-        <div class="status-card" id="runStatus">
-          <span class="status-label">Run status</span>
-          <strong id="statusText">Draft</strong>
-          <span id="statusMeta">No run active yet</span>
+
+        <div class="header-cards">
+          <div class="status-card" id="runStatus">
+            <span class="status-label">Run status</span>
+            <strong id="statusText">Draft</strong>
+            <span id="statusMeta">No run active yet</span>
+          </div>
+
+          <div class="status-card secondary" id="apiStatusCard">
+            <span class="status-label">AI status</span>
+            <strong id="apiStatusText">Key not set</strong>
+            <span id="apiStatusMeta">Add your OpenAI key in Overview</span>
+          </div>
         </div>
       </header>
+
+      <div id="flash" class="flash hidden" role="status" aria-live="polite"></div>
 
       <main class="layout">
         <aside class="sidebar card">
@@ -38,46 +50,135 @@
             <li data-step="challenges">Challenge mode</li>
             <li data-step="results">Results</li>
           </ol>
+
           <div class="sidebar-actions">
             <button id="exportBtn" class="ghost">Export run JSON</button>
-            <button id="resetBtn" class="ghost danger">Reset demo data</button>
+            <button id="resetBtn" class="ghost danger">Reset local data</button>
+          </div>
+
+          <div class="sidebar-note">
+            <p>
+              This build keeps data in your browser. Images stay local to this device
+              unless you explicitly send them to OpenAI for analysis.
+            </p>
           </div>
         </aside>
 
         <section class="content">
           <section id="overview" class="panel card active">
-            <h2>What this PoC validates</h2>
-            <div class="grid two">
-              <article>
-                <h3>Phase 1, place memory</h3>
-                <ul>
-                  <li>Map workshop, cellar, shelves, drawers, cabinets, benches</li>
-                  <li>Capture multiple views with deliberate variance</li>
-                  <li>Create a reusable place memory index</li>
-                </ul>
-              </article>
-              <article>
-                <h3>Phase 2, object in context</h3>
-                <ul>
-                  <li>Capture an object where it lives</li>
-                  <li>Use object + background to infer likely place</li>
-                  <li>Test retrieval, confidence, and trust</li>
-                </ul>
-              </article>
+            <div class="panel-head">
+              <div>
+                <h2>Real PoC setup</h2>
+                <p>
+                  Use your own OpenAI key for live multimodal testing. Nothing is
+                  committed to GitHub, and key persistence is optional.
+                </p>
+              </div>
+              <div class="hero-actions compact">
+                <button class="primary" data-nav="run">Start a run</button>
+                <button class="ghost" data-fill-demo>Load demo data</button>
+              </div>
             </div>
-            <div class="hero-actions">
-              <button class="primary" data-nav="run">Start a validation run</button>
-              <button class="ghost" data-fill-demo>Load demo data</button>
+
+            <div class="grid two">
+              <form id="apiForm" class="subcard stack-lg">
+                <div>
+                  <h3>OpenAI settings</h3>
+                  <p class="muted">
+                    Recommended starting model: <code>gpt-4.1-mini</code>. Change it if
+                    your account exposes a better multimodal model.
+                  </p>
+                </div>
+
+                <label>
+                  OpenAI API key
+                  <input
+                    id="apiKeyInput"
+                    type="password"
+                    placeholder="sk-..."
+                    autocomplete="off"
+                    autocapitalize="off"
+                    spellcheck="false"
+                  />
+                </label>
+
+                <label>
+                  Model
+                  <input
+                    id="modelInput"
+                    type="text"
+                    placeholder="gpt-4.1-mini"
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                </label>
+
+                <label class="inline-check">
+                  <input id="rememberKeyInput" type="checkbox" />
+                  Remember this key on this device
+                </label>
+
+                <div class="button-row align-left">
+                  <button type="submit" class="primary">Save settings</button>
+                  <button type="button" class="ghost" id="clearApiBtn">Forget key</button>
+                </div>
+
+                <p class="fine-print">
+                  If remember is off, the key stays only in memory until reload.
+                  If remember is on, it is stored only in this browser. It is never
+                  committed to the repo. This is still a client-side key, so use a test
+                  key you control.
+                </p>
+              </form>
+
+              <div class="subcard stack-lg">
+                <h3>What this PoC validates</h3>
+                <div class="check-grid">
+                  <article>
+                    <h4>Stage 1, place memory</h4>
+                    <ul>
+                      <li>Capture overview, alternate, detail, and hard shots</li>
+                      <li>Generate structured place cues with AI</li>
+                      <li>Build a reusable place memory index</li>
+                    </ul>
+                  </article>
+                  <article>
+                    <h4>Stage 2, object in context</h4>
+                    <ul>
+                      <li>Capture the object with surrounding background context</li>
+                      <li>Infer likely place using mapped place memory</li>
+                      <li>Track confidence, ambiguity, and errors</li>
+                    </ul>
+                  </article>
+                  <article>
+                    <h4>Challenge mode</h4>
+                    <ul>
+                      <li>Run retrieval queries against the captured dataset</li>
+                      <li>Score ranked results against expected truth</li>
+                      <li>Review whether the concept is good enough for MVP</li>
+                    </ul>
+                  </article>
+                  <article>
+                    <h4>Local-first PoC</h4>
+                    <ul>
+                      <li>Images and app state stay in the browser by default</li>
+                      <li>No backend or secret committed to GitHub Pages</li>
+                      <li>Mobile camera capture works directly in the browser</li>
+                    </ul>
+                  </article>
+                </div>
+              </div>
             </div>
           </section>
 
           <section id="run" class="panel card">
             <h2>Create validation run</h2>
-            <form id="runForm" class="stack-lg">
+            <form id="runForm" class="stack-lg max-form">
               <label>
                 Run name
                 <input name="name" placeholder="Workshop + cellar pilot" required />
               </label>
+
               <label>
                 Environment type
                 <select name="environmentType" required>
@@ -88,11 +189,17 @@
                   <option value="office">Office</option>
                 </select>
               </label>
+
               <label>
                 Notes
-                <textarea name="notes" rows="4" placeholder="What are we testing, what is tricky, what should we compare?"></textarea>
+                <textarea
+                  name="notes"
+                  rows="4"
+                  placeholder="What are we testing, what is tricky, what should we compare?"
+                ></textarea>
               </label>
-              <div class="button-row">
+
+              <div class="button-row align-left">
                 <button type="submit" class="primary">Save run</button>
                 <button type="button" class="ghost" data-nav="places">Skip to Stage 1</button>
               </div>
@@ -103,63 +210,130 @@
             <div class="panel-head">
               <div>
                 <h2>Stage 1, map places</h2>
-                <p>Guide the tester to capture place signatures before objects are added.</p>
+                <p>
+                  Capture distinct views for each place. Then generate AI place memory
+                  so Stage 2 can compare object photos against it.
+                </p>
               </div>
-              <button class="ghost" data-nav="objects">Go to Stage 2</button>
+              <div class="hero-actions compact">
+                <button id="analyzeAllPlacesBtn" class="ghost" type="button">Analyze all places</button>
+                <button class="ghost" data-nav="objects">Go to Stage 2</button>
+              </div>
             </div>
 
             <div class="grid two">
               <form id="placeForm" class="stack-lg subcard">
-                <h3>Add place</h3>
+                <h3>Add mapped place</h3>
+
                 <label>
                   Place name
                   <input name="name" placeholder="Electronics cabinet drawer 2" required />
                 </label>
+
                 <label>
                   Place type
                   <select name="placeType" required>
                     <option value="">Choose one</option>
-                    <option>room</option>
-                    <option>zone</option>
-                    <option>shelf</option>
-                    <option>cabinet</option>
-                    <option>drawer</option>
-                    <option>bench</option>
-                    <option>box</option>
-                    <option>bin</option>
+                    <option value="room">Room</option>
+                    <option value="zone">Zone</option>
+                    <option value="shelf">Shelf</option>
+                    <option value="cabinet">Cabinet</option>
+                    <option value="drawer">Drawer</option>
+                    <option value="bench">Bench</option>
+                    <option value="box">Box</option>
+                    <option value="bin">Bin</option>
                   </select>
                 </label>
+
                 <label>
                   Parent place
-                  <input name="parentPlace" placeholder="Optional, e.g. Cellar or Tool cabinet" />
+                  <select name="parentPlaceId" id="placeParentSelect">
+                    <option value="">Optional</option>
+                  </select>
                 </label>
+
                 <label>
                   Description
-                  <textarea name="description" rows="3" placeholder="Local cues, layout, typical clutter"></textarea>
+                  <textarea
+                    name="description"
+                    rows="3"
+                    placeholder="Layout, visual cues, typical clutter, lighting, neighboring context"
+                  ></textarea>
                 </label>
-                <fieldset>
-                  <legend>Capture checklist</legend>
-                  <label><input type="checkbox" name="captures" value="overview" checked /> Overview shot</label>
-                  <label><input type="checkbox" name="captures" value="alternate" checked /> Alternate angle</label>
-                  <label><input type="checkbox" name="captures" value="detail" checked /> Context/detail shot</label>
-                  <label><input type="checkbox" name="captures" value="hardmode" /> Hard-mode shot</label>
-                </fieldset>
+
                 <label>
                   Variance notes
-                  <textarea name="varianceNotes" rows="3" placeholder="Lighting, clutter, partial occlusion, why this place may confuse the model"></textarea>
+                  <textarea
+                    name="varianceNotes"
+                    rows="3"
+                    placeholder="What changes over time, what could confuse the model, where ambiguity happens"
+                  ></textarea>
                 </label>
-                <button type="submit" class="primary">Add mapped place</button>
+
+                <div class="capture-grid">
+                  <label class="capture-field">
+                    <span>Overview shot</span>
+                    <input
+                      name="overviewFile"
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      required
+                    />
+                    <div class="capture-preview empty" data-preview-for="overviewFile">Required</div>
+                  </label>
+
+                  <label class="capture-field">
+                    <span>Alternate angle</span>
+                    <input
+                      name="alternateFile"
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      required
+                    />
+                    <div class="capture-preview empty" data-preview-for="alternateFile">Required</div>
+                  </label>
+
+                  <label class="capture-field">
+                    <span>Context / detail shot</span>
+                    <input
+                      name="detailFile"
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      required
+                    />
+                    <div class="capture-preview empty" data-preview-for="detailFile">Required</div>
+                  </label>
+
+                  <label class="capture-field">
+                    <span>Hard-mode shot</span>
+                    <input
+                      name="hardmodeFile"
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                    />
+                    <div class="capture-preview empty" data-preview-for="hardmodeFile">Optional</div>
+                  </label>
+                </div>
+
+                <button type="submit" class="primary">Save mapped place</button>
               </form>
 
               <div class="subcard stack-lg">
-                <h3>Place capture guidance</h3>
-                <ul class="hint-list">
-                  <li>Take one wide overview first.</li>
-                  <li>Move slightly left or right for the second angle.</li>
-                  <li>Capture the surrounding context, not just a neat close-up.</li>
-                  <li>Add one realistic messy shot if this place is often cluttered.</li>
-                  <li>Avoid nearly identical photos.</li>
-                </ul>
+                <div>
+                  <h3>Capture guidance</h3>
+                  <ul class="hint-list">
+                    <li>Keep one wide overview for scene identity.</li>
+                    <li>Move left or right for the second angle, do not just zoom.</li>
+                    <li>Show shelf edges, handles, workbench context, labels, or clutter.</li>
+                    <li>Use the hard-mode shot when the place is often messy or dim.</li>
+                    <li>Do not submit four nearly identical photos.</li>
+                  </ul>
+                </div>
+
                 <div id="placesList" class="entity-list empty">No places mapped yet.</div>
               </div>
             </div>
@@ -169,53 +343,97 @@
             <div class="panel-head">
               <div>
                 <h2>Stage 2, capture object in place</h2>
-                <p>Capture the object with enough background context for place matching.</p>
+                <p>
+                  Capture the object with enough environmental context that the model can
+                  infer where it belongs.
+                </p>
               </div>
-              <button class="ghost" data-nav="challenges">Go to challenge mode</button>
+              <div class="hero-actions compact">
+                <button id="inferAllObjectsBtn" class="ghost" type="button">Infer all objects</button>
+                <button class="ghost" data-nav="challenges">Go to challenge mode</button>
+              </div>
             </div>
 
             <div class="grid two">
               <form id="objectForm" class="stack-lg subcard">
-                <h3>Add object record</h3>
+                <h3>Add object capture</h3>
+
                 <label>
                   Object name
                   <input name="name" placeholder="Black cable tester" required />
                 </label>
+
                 <label>
                   Category
                   <input name="category" placeholder="electronics tool" />
                 </label>
+
                 <label>
                   Actual place
                   <select name="placeId" id="objectPlaceSelect" required>
                     <option value="">Choose a mapped place</option>
                   </select>
                 </label>
+
                 <label>
                   Capture quality
                   <select name="quality">
-                    <option>good</option>
-                    <option>dim</option>
-                    <option>partial occlusion</option>
-                    <option>cluttered</option>
-                    <option>hard case</option>
+                    <option value="good">Good</option>
+                    <option value="dim">Dim</option>
+                    <option value="partial occlusion">Partial occlusion</option>
+                    <option value="cluttered">Cluttered</option>
+                    <option value="hard case">Hard case</option>
                   </select>
                 </label>
+
                 <label>
                   Notes
-                  <textarea name="notes" rows="3" placeholder="What makes this object tricky, repeated, hidden, similar?"></textarea>
+                  <textarea
+                    name="notes"
+                    rows="3"
+                    placeholder="What makes this object tricky, repeated, hidden, similar, or easy to confuse?"
+                  ></textarea>
                 </label>
-                <button type="submit" class="primary">Add object record</button>
+
+                <div class="capture-grid two-up">
+                  <label class="capture-field">
+                    <span>Object in context</span>
+                    <input
+                      name="contextFile"
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      required
+                    />
+                    <div class="capture-preview empty" data-preview-for="contextFile">Required</div>
+                  </label>
+
+                  <label class="capture-field">
+                    <span>Alternate object angle</span>
+                    <input
+                      name="alternateObjectFile"
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                    />
+                    <div class="capture-preview empty" data-preview-for="alternateObjectFile">Optional</div>
+                  </label>
+                </div>
+
+                <button type="submit" class="primary">Save object capture</button>
               </form>
 
               <div class="subcard stack-lg">
-                <h3>Stage 2 guidance</h3>
-                <ul class="hint-list">
-                  <li>Keep the object clearly visible.</li>
-                  <li>Do not crop out the surrounding location.</li>
-                  <li>If two objects are similar, include a second angle.</li>
-                  <li>Trust drops fast when the model sounds too certain, so log ambiguity.</li>
-                </ul>
+                <div>
+                  <h3>Stage 2 guidance</h3>
+                  <ul class="hint-list">
+                    <li>Keep the object visible, but do not crop out the surroundings.</li>
+                    <li>Include shelf edges, drawer context, neighboring tools, or labels.</li>
+                    <li>If the object is small, add a second angle instead of an extreme crop.</li>
+                    <li>Use AI inference only after Stage 1 has enough mapped places.</li>
+                  </ul>
+                </div>
+
                 <div id="objectsList" class="entity-list empty">No objects captured yet.</div>
               </div>
             </div>
@@ -225,7 +443,10 @@
             <div class="panel-head">
               <div>
                 <h2>Challenge mode</h2>
-                <p>Test object-only, place-only, and joint retrieval quality.</p>
+                <p>
+                  Run retrieval queries against the captured dataset and score whether the
+                  ranked result is trustworthy enough for a real MVP.
+                </p>
               </div>
               <button class="ghost" data-nav="results">Go to results</button>
             </div>
@@ -233,10 +454,16 @@
             <div class="grid two">
               <form id="challengeForm" class="stack-lg subcard">
                 <h3>Run retrieval challenge</h3>
+
                 <label>
                   Query text
-                  <input name="queryText" placeholder="Find the black cable tester from the electronics cabinet" required />
+                  <input
+                    name="queryText"
+                    placeholder="Find the black cable tester from the electronics cabinet"
+                    required
+                  />
                 </label>
+
                 <label>
                   Query type
                   <select name="queryType">
@@ -247,13 +474,22 @@
                     <option value="negative">Negative</option>
                   </select>
                 </label>
+
                 <label>
                   Expected object
                   <select name="expectedObjectId" id="challengeObjectSelect">
                     <option value="">Optional</option>
                   </select>
                 </label>
-                <button type="submit" class="primary">Score challenge</button>
+
+                <label>
+                  Expected place
+                  <select name="expectedPlaceId" id="challengePlaceSelect">
+                    <option value="">Optional</option>
+                  </select>
+                </label>
+
+                <button type="submit" class="primary">Run challenge</button>
               </form>
 
               <div class="subcard stack-lg">
@@ -265,30 +501,39 @@
 
           <section id="results" class="panel card">
             <h2>Results</h2>
-            <div class="metrics-grid">
+
+            <div class="metrics-grid expanded">
               <div class="metric"><span>Places mapped</span><strong id="metricPlaces">0</strong></div>
+              <div class="metric"><span>Places analyzed</span><strong id="metricPlaceAnalyses">0</strong></div>
               <div class="metric"><span>Objects captured</span><strong id="metricObjects">0</strong></div>
-              <div class="metric"><span>Challenges run</span><strong id="metricChallenges">0</strong></div>
-              <div class="metric"><span>Trust avg</span><strong id="metricTrust">0.0</strong></div>
+              <div class="metric"><span>Objects inferred</span><strong id="metricObjectInferences">0</strong></div>
+              <div class="metric"><span>Place top-1</span><strong id="metricPlaceTop1">0%</strong></div>
+              <div class="metric"><span>Place top-3</span><strong id="metricPlaceTop3">0%</strong></div>
+              <div class="metric"><span>Joint top-1</span><strong id="metricJointTop1">0%</strong></div>
+              <div class="metric"><span>Challenges correct</span><strong id="metricChallenges">0%</strong></div>
             </div>
+
             <div class="grid two">
               <div class="subcard">
-                <h3>What this validates</h3>
-                <ul>
-                  <li>Place memory creation from Stage 1 capture</li>
-                  <li>Object-in-context place matching in Stage 2</li>
-                  <li>Joint retrieval usefulness and confidence behavior</li>
-                </ul>
+                <h3>Readout</h3>
+                <div id="resultsSummary" class="summary-box">
+                  No evaluation summary yet. Add mapped places, object captures, and a few
+                  inference runs first.
+                </div>
               </div>
+
               <div class="subcard">
-                <h3>Build recommendation</h3>
+                <h3>Recommendation</h3>
                 <p id="buildRecommendation">
-                  Start with guided photo capture. Add video only after the photo workflow proves the concept.
+                  Start with guided photo capture, then judge whether place-aware inference
+                  is accurate enough to justify a richer MVP.
                 </p>
               </div>
             </div>
-            <div id="resultsSummary" class="subcard summary-box">
-              No evaluation summary yet.
+
+            <div class="subcard stack-lg">
+              <h3>Detailed evaluation</h3>
+              <div id="resultsDetails" class="entity-list empty">No object inference results yet.</div>
             </div>
           </section>
         </section>
