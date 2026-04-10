@@ -2005,6 +2005,11 @@ async function render() {
 }
 
 function populateSelects() {
+  const currentPlaceParent = refs.placeParentSelect.value;
+  const currentObjectPlace = refs.objectPlaceSelect.value;
+  const currentChallengePlace = refs.challengePlaceSelect.value;
+  const currentChallengeObject = refs.challengeObjectSelect.value;
+
   const placeOptions = ['<option value="">Optional</option>']
     .concat(state.places.map((place) => `<option value="${place.id}">${escapeHtml(place.name)}</option>`))
     .join('');
@@ -2019,6 +2024,11 @@ function populateSelects() {
   refs.challengeObjectSelect.innerHTML = ['<option value="">Optional</option>']
     .concat(state.objects.map((object) => `<option value="${object.id}">${escapeHtml(object.name)}</option>`))
     .join('');
+
+  if (currentPlaceParent) refs.placeParentSelect.value = currentPlaceParent;
+  if (currentObjectPlace) refs.objectPlaceSelect.value = currentObjectPlace;
+  if (currentChallengePlace) refs.challengePlaceSelect.value = currentChallengePlace;
+  if (currentChallengeObject) refs.challengeObjectSelect.value = currentChallengeObject;
 }
 
 function updateRunStatus() {
