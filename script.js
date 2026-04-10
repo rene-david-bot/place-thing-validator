@@ -2,7 +2,8 @@ const STATE_KEY = 'placeThingValidatorStateV2';
 const SETTINGS_KEY = 'placeThingValidatorSettingsV2';
 const DB_NAME = 'placeThingValidatorDB';
 const DB_VERSION = 1;
-const DEFAULT_MODEL = 'gpt-5.4';
+const DEFAULT_MODEL = 'gpt-5.4-mini';
+const DEFAULT_MODEL_MIGRATION_VERSION = '2026-04-10-gpt-5.4-mini';
 const DEFAULT_REMOTE_LOG_URL = 'https://perception-attractive-metropolitan-journalist.trycloudflare.com/ingest';
 const STALE_REMOTE_LOG_URLS = new Set([
   'https://plains-surplus-trusted-painting.trycloudflare.com/ingest',
@@ -25,6 +26,7 @@ const DEFAULT_STATE = {
 
 const DEFAULT_SETTINGS = {
   model: DEFAULT_MODEL,
+  modelDefaultVersion: DEFAULT_MODEL_MIGRATION_VERSION,
   rememberKey: true,
   blindMode: true,
   apiKey: '',
@@ -41,8 +43,16 @@ const STOPWORDS = new Set([
 
 let state = loadState();
 let settings = loadSettings();
+let settingsNeedsSave = false;
+if (settings.__migratedLegacyDefaultModel) {
+  delete settings.__migratedLegacyDefaultModel;
+  settingsNeedsSave = true;
+}
 if (!settings.deviceSessionId) {
   settings.deviceSessionId = uid('device');
+  settingsNeedsSave = true;
+}
+if (settingsNeedsSave) {
   saveSettings();
 }
 let sessionApiKey = settings.rememberKey ? settings.apiKey : '';
@@ -254,16 +264,21 @@ function loadSettings() {
     if (!raw) return fallback;
     const parsed = JSON.parse(raw);
     const parsedRemoteLogUrl = safeString(parsed?.remoteLogUrl);
+    const parsedModel = safeString(parsed?.model);
+    const parsedModelDefaultVersion = safeString(parsed?.modelDefaultVersion);
+    const migrateLegacyDefaultModel = !parsedModelDefaultVersion && (!parsedModel || parsedModel === 'gpt-5.4');
     return {
       ...fallback,
       ...parsed,
-      model: safeString(parsed?.model) || DEFAULT_MODEL,
+      model: migrateLegacyDefaultModel ? DEFAULT_MODEL : (parsedModel || DEFAULT_MODEL),
+      modelDefaultVersion: parsedModelDefaultVersion || DEFAULT_MODEL_MIGRATION_VERSION,
       rememberKey: Boolean(parsed?.rememberKey),
       blindMode: parsed?.blindMode !== false,
       apiKey: Boolean(parsed?.rememberKey) ? safeString(parsed?.apiKey) : '',
       remoteLogging: parsed?.remoteLogging !== false,
       remoteLogUrl: !parsedRemoteLogUrl || STALE_REMOTE_LOG_URLS.has(parsedRemoteLogUrl) ? DEFAULT_REMOTE_LOG_URL : parsedRemoteLogUrl,
       deviceSessionId: safeString(parsed?.deviceSessionId),
+      __migratedLegacyDefaultModel: migrateLegacyDefaultModel,
     };
   } catch {
     return fallback;
@@ -277,6 +292,7 @@ function saveState() {
 function saveSettings() {
   const persisted = {
     model: safeString(settings.model) || DEFAULT_MODEL,
+    modelDefaultVersion: DEFAULT_MODEL_MIGRATION_VERSION,
     rememberKey: Boolean(settings.rememberKey),
     blindMode: isBlindModeEnabled(),
     apiKey: settings.rememberKey ? safeString(settings.apiKey) : '',
@@ -350,7 +366,10 @@ async function testOpenAIConnection() {
     refs.modelInput.value = result.model;
     saveSettings();
     updateApiStatus();
-    appendLog('ai.connection_test', 'AI connection test succeeded.', { model: result.model });
+    appendLog('ai.connection_test', 'AI connection test succeeded.', {
+      model: result.model,
+      ...buildUsageCostLogData(result.model, result.usage),
+    });
     setBanner(`AI connection works. Active model: ${result.model}.`, 'success', 4500);
   } catch (error) {
     appendLog('ai.connection_test_error', 'AI connection test failed.', { error: error?.message || 'Unknown error' }, 'error');
@@ -461,6 +480,8 @@ function buildInferenceFromPrefillDraft(draft) {
     model: draft.model,
     createdAt: draft.createdAt,
     rawText: draft.rawText,
+    usage: draft.usage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+    cost: draft.cost || null,
     normalized: {
       place: {
         predictedPlaceId: draft.place.predictedPlaceId,
@@ -584,6 +605,7 @@ You will first see the object-in-context photo, then optional alternate object v
       ...referenceImages,
     ],
   });
+  const usageCost = buildUsageCostLogData(result.model, result.usage);
 
   const draft = normalizeObjectPrefill(result.parsed);
   objectPrefillDraft = {
@@ -592,6 +614,15 @@ You will first see the object-in-context photo, then optional alternate object v
     model: result.model,
     rawText: result.rawText,
     createdAt: new Date().toISOString(),
+    usage: usageCost.usage,
+    cost: {
+      pricingModel: usageCost.pricingModel,
+      estimatedCostUsd: usageCost.estimatedCostUsd,
+      estimatedPromptCostUsd: usageCost.estimatedPromptCostUsd,
+      estimatedCompletionCostUsd: usageCost.estimatedCompletionCostUsd,
+      inputRateUsdPerMillion: usageCost.inputRateUsdPerMillion,
+      outputRateUsdPerMillion: usageCost.outputRateUsdPerMillion,
+    },
   };
 
   applyObjectPrefillDraft(objectPrefillDraft);
@@ -607,6 +638,7 @@ You will first see the object-in-context photo, then optional alternate object v
     predictedPlaceId: draft.place.predictedPlaceId,
     shouldCapturePlaceFirst: draft.place.shouldCapturePlaceFirst,
     overallConfidence: draft.overall.confidence,
+    ...usageCost,
   });
 
   await render();
@@ -715,6 +747,8 @@ async function buildChallengeQueryProfile(queryText) {
     placeTerms: [],
     attributes: [],
     synonyms: [],
+    usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+    cost: null,
   };
 
   if (!getApiKey()) return fallback;
@@ -751,11 +785,13 @@ ${queryText}
       ...tokenize(expanded.attributes.join(' ')),
       ...tokenize(expanded.synonyms.join(' ')),
     ]));
+    const usageCost = buildUsageCostLogData(result.model, result.usage);
 
     appendLog('challenge.query_expand', 'Expanded challenge query with AI.', {
       model: result.model,
       detectedLanguage: expanded.detectedLanguage,
       tokenCount: mergedTokens.length,
+      ...usageCost,
     });
 
     return {
@@ -763,6 +799,15 @@ ${queryText}
       source: 'ai',
       model: result.model,
       tokens: mergedTokens,
+      usage: usageCost.usage,
+      cost: {
+        pricingModel: usageCost.pricingModel,
+        estimatedCostUsd: usageCost.estimatedCostUsd,
+        estimatedPromptCostUsd: usageCost.estimatedPromptCostUsd,
+        estimatedCompletionCostUsd: usageCost.estimatedCompletionCostUsd,
+        inputRateUsdPerMillion: usageCost.inputRateUsdPerMillion,
+        outputRateUsdPerMillion: usageCost.outputRateUsdPerMillion,
+      },
     };
   } catch (error) {
     appendLog('challenge.query_expand_error', 'AI query expansion failed, falling back to local matching.', {
@@ -1298,6 +1343,9 @@ async function handleChallengeSubmit(event) {
     topLabel: result.rankedResults?.[0]?.label || null,
     topObjectId: result.topObjectId,
     topPlaceId: result.topPlaceId,
+    usage: queryProfile?.usage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+    estimatedCostUsd: queryProfile?.cost?.estimatedCostUsd ?? null,
+    pricingModel: queryProfile?.cost?.pricingModel ?? null,
   });
   await render();
 
@@ -1462,12 +1510,19 @@ Capture what would help later place matching from object-in-context photos.
       model: result.model,
       createdAt: new Date().toISOString(),
       rawText: result.rawText,
+      usage: result.usage,
+      cost: estimateUsageCostUsd(result.model, result.usage),
       normalized: normalizePlaceSummary(result.parsed),
     };
     place.aiState = 'done';
     place.aiError = '';
 
-    appendLog('place.ai.success', `AI place analysis succeeded for ${place.name}.`, { placeId: place.id, model: result.model, blindMode });
+    appendLog('place.ai.success', `AI place analysis succeeded for ${place.name}.`, {
+      placeId: place.id,
+      model: result.model,
+      blindMode,
+      ...buildUsageCostLogData(result.model, result.usage),
+    });
     if (!silent) {
       setBanner(`AI place memory saved for ${place.name}.`, 'success', 4000);
     }
@@ -1589,6 +1644,8 @@ Use both the object and the background context.
       model: result.model,
       createdAt: new Date().toISOString(),
       rawText: result.rawText,
+      usage: result.usage,
+      cost: estimateUsageCostUsd(result.model, result.usage),
       normalized: normalizeObjectInference(result.parsed),
     };
     object.aiState = 'done';
@@ -1599,6 +1656,7 @@ Use both the object and the background context.
       model: result.model,
       blindMode,
       predictedPlaceId: object.inference.normalized.place.predictedPlaceId,
+      ...buildUsageCostLogData(result.model, result.usage),
     });
     if (!silent) {
       const predictedPlaceId = object.inference.normalized.place.predictedPlaceId;
@@ -1746,16 +1804,21 @@ async function callOpenAIJson({ systemPrompt, userText, imageEntries = [], model
       throw new Error('OpenAI returned a response, but I could not parse valid JSON from it.');
     }
 
-    appendLog('ai.model.success', `OpenAI request succeeded with ${data?.model || model}.`, { model: data?.model || model });
+    const resolvedModel = data?.model || model;
+    const usage = {
+      promptTokens: Number(data?.usage?.prompt_tokens || 0),
+      completionTokens: Number(data?.usage?.completion_tokens || 0),
+      totalTokens: Number(data?.usage?.total_tokens || 0),
+    };
+    appendLog('ai.model.success', `OpenAI request succeeded with ${resolvedModel}.`, {
+      model: resolvedModel,
+      ...buildUsageCostLogData(resolvedModel, usage),
+    });
     return {
-      model: data?.model || model,
+      model: resolvedModel,
       rawText,
       parsed,
-      usage: {
-        promptTokens: Number(data?.usage?.prompt_tokens || 0),
-        completionTokens: Number(data?.usage?.completion_tokens || 0),
-        totalTokens: Number(data?.usage?.total_tokens || 0),
-      },
+      usage,
     };
   }
 
@@ -1785,11 +1848,11 @@ function buildModelCandidates() {
   return Array.from(new Set([
     safeString(settings.model) || DEFAULT_MODEL,
     DEFAULT_MODEL,
-    'gpt-5.4',
     'gpt-5.4-mini',
-    'gpt-5.4-nano',
+    'gpt-5.4',
     'gpt-5.2',
     'gpt-5.1',
+    'gpt-5.4-nano',
   ].filter(Boolean)));
 }
 
@@ -1825,6 +1888,24 @@ function estimateUsageCostUsd(model, usage) {
     promptCostUsd: promptCost,
     completionCostUsd: completionCost,
     totalCostUsd: promptCost + completionCost,
+  };
+}
+
+function buildUsageCostLogData(model, usage) {
+  const normalizedUsage = {
+    promptTokens: Number(usage?.promptTokens || 0),
+    completionTokens: Number(usage?.completionTokens || 0),
+    totalTokens: Number(usage?.totalTokens || 0),
+  };
+  const estimate = estimateUsageCostUsd(model, normalizedUsage);
+  return {
+    usage: normalizedUsage,
+    pricingModel: estimate?.pricingModel || resolvePricingModel(model),
+    inputRateUsdPerMillion: estimate?.inputRate ?? null,
+    outputRateUsdPerMillion: estimate?.outputRate ?? null,
+    estimatedPromptCostUsd: estimate?.promptCostUsd ?? null,
+    estimatedCompletionCostUsd: estimate?.completionCostUsd ?? null,
+    estimatedCostUsd: estimate?.totalCostUsd ?? null,
   };
 }
 

@@ -8,7 +8,7 @@
       name="description"
       content="Mobile-friendly PoC for mapping places, capturing objects in context, and testing place-aware retrieval with user-supplied OpenAI API access."
     />
-    <link rel="stylesheet" href="styles.css?v=20260410-1726" />
+    <link rel="stylesheet" href="styles.css?v=20260410-1802" />
   </head>
   <body>
     <div class="app-shell">
@@ -85,7 +85,7 @@
                 <div>
                   <h3>OpenAI settings</h3>
                   <p class="muted">
-                    Recommended starting model: <code>gpt-5.4</code>. Change it if
+                    Recommended starting model: <code>gpt-5.4-mini</code>. Change it if
                     your account exposes a better multimodal model.
                   </p>
                 </div>
@@ -107,7 +107,7 @@
                   <input
                     id="modelInput"
                     type="text"
-                    placeholder="gpt-5.4"
+                    placeholder="gpt-5.4-mini"
                     autocomplete="off"
                     spellcheck="false"
                   />
@@ -555,7 +555,7 @@
                 <input
                   id="benchmarkModelsInput"
                   type="text"
-                  value="gpt-5.4, gpt-5.4-mini, gpt-5.4-nano, gpt-5.2, gpt-5.1"
+                  value="gpt-5.4-mini, gpt-5.4, gpt-5.2, gpt-5.1, gpt-5.4-nano"
                   spellcheck="false"
                 />
               </label>
@@ -593,6 +593,6 @@
       </main>
     </div>
 
-    <script src="script.js?v=20260410-1726"></script>
+    <script src="script.js?v=20260410-1802"></script>
   </body>
 </html>
