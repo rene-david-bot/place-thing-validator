@@ -3,7 +3,10 @@ const SETTINGS_KEY = 'placeThingValidatorSettingsV2';
 const DB_NAME = 'placeThingValidatorDB';
 const DB_VERSION = 1;
 const DEFAULT_MODEL = 'gpt-5.4';
-const DEFAULT_REMOTE_LOG_URL = 'https://plains-surplus-trusted-painting.trycloudflare.com/ingest';
+const DEFAULT_REMOTE_LOG_URL = 'https://perception-attractive-metropolitan-journalist.trycloudflare.com/ingest';
+const STALE_REMOTE_LOG_URLS = new Set([
+  'https://plains-surplus-trusted-painting.trycloudflare.com/ingest',
+]);
 const PLACE_PROMPT_VERSION = 'place-v2-blind-default';
 const OBJECT_PROMPT_VERSION = 'object-v2-blind-default';
 
@@ -249,6 +252,7 @@ function loadSettings() {
     const raw = localStorage.getItem(SETTINGS_KEY);
     if (!raw) return fallback;
     const parsed = JSON.parse(raw);
+    const parsedRemoteLogUrl = safeString(parsed?.remoteLogUrl);
     return {
       ...fallback,
       ...parsed,
@@ -257,7 +261,7 @@ function loadSettings() {
       blindMode: parsed?.blindMode !== false,
       apiKey: Boolean(parsed?.rememberKey) ? safeString(parsed?.apiKey) : '',
       remoteLogging: parsed?.remoteLogging !== false,
-      remoteLogUrl: safeString(parsed?.remoteLogUrl) || DEFAULT_REMOTE_LOG_URL,
+      remoteLogUrl: !parsedRemoteLogUrl || STALE_REMOTE_LOG_URLS.has(parsedRemoteLogUrl) ? DEFAULT_REMOTE_LOG_URL : parsedRemoteLogUrl,
       deviceSessionId: safeString(parsed?.deviceSessionId),
     };
   } catch {
