@@ -1994,7 +1994,8 @@ async function render() {
   updateRunStatus();
   updateApiStatus();
   renderMetricsAndSummary();
-  renderChallengeResult();
+  await renderChallengeResult(token);
+  if (token !== renderToken) return;
   renderDebugLog();
   await renderPlacesList(token);
   if (token !== renderToken) return;
@@ -2190,25 +2191,36 @@ async function renderObjectsList(token) {
   refs.objectsList.innerHTML = cards.join('');
 }
 
-function renderChallengeResult() {
+async function renderChallengeResult(token) {
   const latest = state.queryTests[state.queryTests.length - 1];
   if (!latest) {
     refs.challengeResult.className = 'entity-list empty';
-    refs.challengeResult.textContent = 'No challenge run yet.';
+    refs.challengeResult.textContent = 'No search run yet.';
     return;
   }
 
-  const rankedRows = latest.rankedResults.length
-    ? latest.rankedResults.map((result, index) => `
+  let rankedRows = '<div class="score-row"><strong>No confident match</strong><p>The current retrieval layer could not find a strong candidate.</p></div>';
+
+  if (latest.rankedResults.length) {
+    const rows = [];
+    for (const [index, result] of latest.rankedResults.entries()) {
+      if (token !== renderToken) return;
+      const object = getObject(result.objectId);
+      const previewAssets = object ? await getAssets((object.assetIds || []).slice(0, 1)) : [];
+      const previewBlock = previewAssets.length ? renderAssetStrip(previewAssets) : '';
+      rows.push(`
         <div class="score-row">
           <strong>#${index + 1}, ${escapeHtml(result.label)}</strong>
           <div class="tag-row">
             <span class="tag">Score ${result.score.toFixed(1)}</span>
             ${result.evidence.length ? `<span class="tag">Evidence: ${escapeHtml(result.evidence.join(', '))}</span>` : ''}
           </div>
+          ${previewBlock}
         </div>
-      `).join('')
-    : '<div class="score-row"><strong>No confident match</strong><p>The local retrieval layer could not find a strong candidate.</p></div>';
+      `);
+    }
+    rankedRows = rows.join('');
+  }
 
   refs.challengeResult.className = 'entity-list';
   refs.challengeResult.innerHTML = `
