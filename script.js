@@ -3,6 +3,7 @@ const SETTINGS_KEY = 'placeThingValidatorSettingsV2';
 const DB_NAME = 'placeThingValidatorDB';
 const DB_VERSION = 1;
 const DEFAULT_MODEL = 'gpt-5.4';
+const DEFAULT_REMOTE_LOG_URL = 'https://plains-surplus-trusted-painting.trycloudflare.com/ingest';
 const PLACE_PROMPT_VERSION = 'place-v1';
 const OBJECT_PROMPT_VERSION = 'object-v1';
 
@@ -21,6 +22,9 @@ const DEFAULT_SETTINGS = {
   model: DEFAULT_MODEL,
   rememberKey: true,
   apiKey: '',
+  remoteLogging: true,
+  remoteLogUrl: DEFAULT_REMOTE_LOG_URL,
+  deviceSessionId: '',
 };
 
 const STOPWORDS = new Set([
@@ -31,6 +35,10 @@ const STOPWORDS = new Set([
 
 let state = loadState();
 let settings = loadSettings();
+if (!settings.deviceSessionId) {
+  settings.deviceSessionId = uid('device');
+  saveSettings();
+}
 let sessionApiKey = settings.rememberKey ? settings.apiKey : '';
 let flashTimer = null;
 let renderToken = 0;
@@ -92,6 +100,11 @@ function boot() {
   hydrateApiForm();
   bindEvents();
   navigate(state.ui?.activeStep || 'overview', { save: false });
+  appendLog('app.boot', 'PlacePilot app loaded on device.', {
+    model: settings.model,
+    remoteLogging: settings.remoteLogging,
+    sessionId: settings.deviceSessionId,
+  });
   void render();
 }
 
@@ -222,6 +235,9 @@ function loadSettings() {
       model: safeString(parsed?.model) || DEFAULT_MODEL,
       rememberKey: Boolean(parsed?.rememberKey),
       apiKey: Boolean(parsed?.rememberKey) ? safeString(parsed?.apiKey) : '',
+      remoteLogging: parsed?.remoteLogging !== false,
+      remoteLogUrl: safeString(parsed?.remoteLogUrl) || DEFAULT_REMOTE_LOG_URL,
+      deviceSessionId: safeString(parsed?.deviceSessionId),
     };
   } catch {
     return fallback;
@@ -237,6 +253,9 @@ function saveSettings() {
     model: safeString(settings.model) || DEFAULT_MODEL,
     rememberKey: Boolean(settings.rememberKey),
     apiKey: settings.rememberKey ? safeString(settings.apiKey) : '',
+    remoteLogging: settings.remoteLogging !== false,
+    remoteLogUrl: safeString(settings.remoteLogUrl) || DEFAULT_REMOTE_LOG_URL,
+    deviceSessionId: safeString(settings.deviceSessionId) || uid('device'),
   };
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(persisted));
 }
@@ -1821,15 +1840,25 @@ function renderMetricsAndSummary() {
 
 function renderDebugLog() {
   const logs = state.logs || [];
+  const relayCard = `
+    <article class="entity-card">
+      <div class="tag-row">
+        <span class="tag ${settings.remoteLogging ? 'good' : 'warn'}">${settings.remoteLogging ? 'Remote relay active' : 'Remote relay off'}</span>
+        <span class="tag">Session ${escapeHtml(settings.deviceSessionId || '')}</span>
+      </div>
+      <p>${settings.remoteLogging ? 'This device will try to stream debug events to the VM relay while also keeping local logs.' : 'Only local device logs are active.'}</p>
+    </article>
+  `;
+
   if (!logs.length) {
-    refs.debugLogList.className = 'entity-list empty';
-    refs.debugLogList.textContent = 'No debug events yet.';
+    refs.debugLogList.className = 'entity-list';
+    refs.debugLogList.innerHTML = `${relayCard}<div class="entity-list empty">No debug events yet.</div>`;
     return;
   }
 
   const recent = logs.slice(-20).reverse();
   refs.debugLogList.className = 'entity-list';
-  refs.debugLogList.innerHTML = recent.map((entry) => `
+  refs.debugLogList.innerHTML = relayCard + recent.map((entry) => `
     <article class="entity-card">
       <div class="tag-row">
         <span class="tag">${escapeHtml(entry.level || 'info')}</span>
@@ -1867,20 +1896,59 @@ function clearDebugLog() {
   setBanner('Local debug log cleared.', 'success', 3000);
 }
 
-function appendLog(type, message, data = {}, level = 'info') {
+function appendLog(type, message, data = {}, level = 'info', options = {}) {
   state.logs = Array.isArray(state.logs) ? state.logs : [];
-  state.logs.push({
+  const entry = {
     id: uid('log'),
     ts: new Date().toISOString(),
     level,
     type,
     message,
     data,
-  });
+  };
+  state.logs.push(entry);
   if (state.logs.length > 200) {
     state.logs = state.logs.slice(-200);
   }
   saveState();
+  if (options.remote !== false) {
+    void sendRemoteLog(entry);
+  }
+}
+
+async function sendRemoteLog(entry) {
+  if (!settings.remoteLogging || !settings.remoteLogUrl) return;
+  try {
+    await fetch(settings.remoteLogUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        sessionId: settings.deviceSessionId,
+        page: window.location.href,
+        run: state.run ? { id: state.run.id, name: state.run.name } : null,
+        model: settings.model,
+        entry,
+      }),
+    });
+  } catch (error) {
+    console.warn('Remote log relay failed', error);
+    const relayError = {
+      id: uid('log'),
+      ts: new Date().toISOString(),
+      level: 'warn',
+      type: 'remote.log.error',
+      message: 'Remote relay send failed.',
+      data: { error: error?.message || String(error) },
+    };
+    state.logs = Array.isArray(state.logs) ? state.logs : [];
+    state.logs.push(relayError);
+    if (state.logs.length > 200) {
+      state.logs = state.logs.slice(-200);
+    }
+    saveState();
+  }
 }
 
 async function renderResultsDetails(token) {
