@@ -498,6 +498,9 @@ function handleChallengeSubmit(event) {
     queryText,
     correct: result.correct,
     confidence: result.confidence,
+    topLabel: result.rankedResults?.[0]?.label || null,
+    topObjectId: result.topObjectId,
+    topPlaceId: result.topPlaceId,
   });
   void render();
 
@@ -1226,56 +1229,56 @@ function scoreObjectForQuery(object, tokens, queryText, queryType) {
   const objectInference = object.inference?.normalized || null;
   const placeSummary = place?.aiSummary?.normalized || null;
 
-  const objectName = normalizeText(object.name);
-  const objectCategory = normalizeText(object.category);
-  const placeName = normalizeText(place?.name || '');
-  const notes = normalizeText(object.notes);
-  const description = normalizeText(place?.description || '');
-  const cues = normalizeText([
+  const objectName = buildCanonicalText(object.name);
+  const objectCategory = buildCanonicalText(object.category);
+  const placeName = buildCanonicalText(place?.name || '');
+  const notes = buildCanonicalText(object.notes);
+  const description = buildCanonicalText(place?.description || '');
+  const cues = buildCanonicalText([
     ...(placeSummary?.visibleContextCues || []),
     ...(placeSummary?.distinguishingFeatures || []),
     ...(placeSummary?.retrievalKeywords || []),
   ].join(' '));
-  const predictedObject = normalizeText(objectInference?.object?.predictedLabel || '');
-  const predictedPlace = normalizeText(objectInference?.place?.predictedLabel || '');
+  const predictedObject = buildCanonicalText(objectInference?.object?.predictedLabel || '');
+  const predictedPlace = buildCanonicalText(objectInference?.place?.predictedLabel || '');
 
   let score = 0;
   const evidence = new Set();
-  const queryNorm = normalizeText(queryText);
+  const queryNorm = buildCanonicalText(queryText);
   const haystack = [objectName, objectCategory, placeName, notes, description, cues, predictedObject, predictedPlace]
     .filter(Boolean)
     .join(' ');
 
   for (const token of tokens) {
-    if (objectName.includes(token)) {
+    if (textContainsTokenish(objectName, token)) {
       score += 4;
       evidence.add(`object:${token}`);
     }
-    if (objectCategory.includes(token)) {
+    if (textContainsTokenish(objectCategory, token)) {
       score += 2.5;
       evidence.add(`category:${token}`);
     }
-    if (placeName.includes(token)) {
+    if (textContainsTokenish(placeName, token)) {
       score += queryType === 'place' ? 4.5 : 3.5;
       evidence.add(`place:${token}`);
     }
-    if (notes.includes(token)) {
+    if (textContainsTokenish(notes, token)) {
       score += 1.5;
       evidence.add(`notes:${token}`);
     }
-    if (description.includes(token) || cues.includes(token)) {
+    if (textContainsTokenish(description, token) || textContainsTokenish(cues, token)) {
       score += queryType === 'place' ? 2.8 : 1.8;
       evidence.add(`context:${token}`);
     }
-    if (predictedObject.includes(token) || predictedPlace.includes(token)) {
+    if (textContainsTokenish(predictedObject, token) || textContainsTokenish(predictedPlace, token)) {
       score += 1.4;
       evidence.add(`ai:${token}`);
     }
   }
 
-  if (queryNorm && haystack.includes(queryNorm)) {
+  if (queryNorm && textContainsPhraseish(haystack, queryNorm)) {
     score += 5;
-    evidence.add('exact-ish phrase');
+    evidence.add('fuzzy phrase');
   }
 
   if (queryType === 'joint' && evidence.size >= 2) score += 2;
@@ -2338,10 +2341,81 @@ function normalizeText(text) {
   return safeString(text).toLowerCase();
 }
 
+function normalizeToken(token) {
+  let value = safeString(token).toLowerCase();
+  if (value.endsWith('ies') && value.length > 4) value = `${value.slice(0, -3)}y`;
+  else if (/(ches|shes|xes|zes|ses|oes)$/.test(value) && value.length > 4) value = value.slice(0, -2);
+  else if (value.endsWith('s') && !value.endsWith('ss') && value.length > 3) value = value.slice(0, -1);
+  return value;
+}
+
 function tokenize(text) {
   return normalizeText(text)
     .split(/[^a-z0-9]+/)
+    .map((token) => normalizeToken(token))
     .filter((token) => token && token.length > 1 && !STOPWORDS.has(token));
+}
+
+function buildCanonicalText(text) {
+  return tokenize(text).join(' ');
+}
+
+function levenshteinDistance(a, b) {
+  const left = safeString(a);
+  const right = safeString(b);
+  if (!left) return right.length;
+  if (!right) return left.length;
+
+  const dp = Array.from({ length: left.length + 1 }, (_, i) => [i]);
+  for (let j = 1; j <= right.length; j += 1) dp[0][j] = j;
+
+  for (let i = 1; i <= left.length; i += 1) {
+    for (let j = 1; j <= right.length; j += 1) {
+      const cost = left[i - 1] === right[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + cost,
+      );
+    }
+  }
+
+  return dp[left.length][right.length];
+}
+
+function tokensFuzzyMatch(a, b) {
+  const left = normalizeToken(a);
+  const right = normalizeToken(b);
+  if (!left || !right) return false;
+  if (left === right) return true;
+  if (left.includes(right) || right.includes(left)) return Math.min(left.length, right.length) >= 4;
+
+  const distance = levenshteinDistance(left, right);
+  const maxLen = Math.max(left.length, right.length);
+  if (maxLen <= 5) return distance <= 1;
+  if (maxLen <= 9) return distance <= 2;
+  return distance <= 3;
+}
+
+function textContainsTokenish(text, token) {
+  const canonicalText = buildCanonicalText(text);
+  const canonicalToken = normalizeToken(token);
+  if (!canonicalText || !canonicalToken) return false;
+  if (canonicalText.includes(canonicalToken)) return true;
+  return tokenize(canonicalText).some((candidate) => tokensFuzzyMatch(candidate, canonicalToken));
+}
+
+function textContainsPhraseish(text, query) {
+  const canonicalText = buildCanonicalText(text);
+  const canonicalQuery = buildCanonicalText(query);
+  if (!canonicalText || !canonicalQuery) return false;
+  if (canonicalText.includes(canonicalQuery) || canonicalQuery.includes(canonicalText)) return true;
+
+  const textTokens = tokenize(canonicalText);
+  const queryTokens = tokenize(canonicalQuery);
+  if (!textTokens.length || !queryTokens.length) return false;
+  const matched = queryTokens.filter((token) => textTokens.some((candidate) => tokensFuzzyMatch(candidate, token))).length;
+  return matched / Math.max(queryTokens.length, 1) >= 0.6;
 }
 
 function formatPercent(value) {
@@ -2353,16 +2427,16 @@ function clamp(value, min, max) {
 }
 
 function labelsMatch(a, b) {
-  const left = normalizeText(a);
-  const right = normalizeText(b);
+  const left = buildCanonicalText(a);
+  const right = buildCanonicalText(b);
   if (!left || !right) return false;
   if (left === right || left.includes(right) || right.includes(left)) return true;
 
-  const leftTokens = new Set(tokenize(left));
+  const leftTokens = tokenize(left);
   const rightTokens = tokenize(right);
-  if (!leftTokens.size || !rightTokens.length) return false;
-  const overlap = rightTokens.filter((token) => leftTokens.has(token)).length;
-  return overlap / Math.max(leftTokens.size, rightTokens.length) >= 0.6;
+  if (!leftTokens.length || !rightTokens.length) return false;
+  const overlap = rightTokens.filter((token) => leftTokens.some((candidate) => tokensFuzzyMatch(candidate, token))).length;
+  return overlap / Math.max(leftTokens.length, rightTokens.length) >= 0.6;
 }
 
 function escapeHtml(value) {
