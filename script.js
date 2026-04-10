@@ -4,8 +4,8 @@ const DB_NAME = 'placeThingValidatorDB';
 const DB_VERSION = 1;
 const DEFAULT_MODEL = 'gpt-5.4';
 const DEFAULT_REMOTE_LOG_URL = 'https://plains-surplus-trusted-painting.trycloudflare.com/ingest';
-const PLACE_PROMPT_VERSION = 'place-v1';
-const OBJECT_PROMPT_VERSION = 'object-v1';
+const PLACE_PROMPT_VERSION = 'place-v2-blind-default';
+const OBJECT_PROMPT_VERSION = 'object-v2-blind-default';
 
 const DEFAULT_STATE = {
   run: null,
@@ -21,6 +21,7 @@ const DEFAULT_STATE = {
 const DEFAULT_SETTINGS = {
   model: DEFAULT_MODEL,
   rememberKey: true,
+  blindMode: true,
   apiKey: '',
   remoteLogging: true,
   remoteLogUrl: DEFAULT_REMOTE_LOG_URL,
@@ -52,6 +53,7 @@ const refs = {
   apiKeyInput: document.getElementById('apiKeyInput'),
   modelInput: document.getElementById('modelInput'),
   rememberKeyInput: document.getElementById('rememberKeyInput'),
+  blindModeInput: document.getElementById('blindModeInput'),
   testConnectionBtn: document.getElementById('testConnectionBtn'),
   clearApiBtn: document.getElementById('clearApiBtn'),
   runForm: document.getElementById('runForm'),
@@ -102,6 +104,7 @@ function boot() {
   navigate(state.ui?.activeStep || 'overview', { save: false });
   appendLog('app.boot', 'PlacePilot app loaded on device.', {
     model: settings.model,
+    blindMode: isBlindModeEnabled(),
     remoteLogging: settings.remoteLogging,
     sessionId: settings.deviceSessionId,
   });
@@ -190,6 +193,7 @@ function bindEvents() {
 function hydrateApiForm() {
   refs.modelInput.value = settings.model || DEFAULT_MODEL;
   refs.rememberKeyInput.checked = Boolean(settings.rememberKey);
+  refs.blindModeInput.checked = isBlindModeEnabled();
   refs.apiKeyInput.value = settings.rememberKey ? settings.apiKey : '';
 }
 
@@ -234,6 +238,7 @@ function loadSettings() {
       ...parsed,
       model: safeString(parsed?.model) || DEFAULT_MODEL,
       rememberKey: Boolean(parsed?.rememberKey),
+      blindMode: parsed?.blindMode !== false,
       apiKey: Boolean(parsed?.rememberKey) ? safeString(parsed?.apiKey) : '',
       remoteLogging: parsed?.remoteLogging !== false,
       remoteLogUrl: safeString(parsed?.remoteLogUrl) || DEFAULT_REMOTE_LOG_URL,
@@ -252,6 +257,7 @@ function saveSettings() {
   const persisted = {
     model: safeString(settings.model) || DEFAULT_MODEL,
     rememberKey: Boolean(settings.rememberKey),
+    blindMode: isBlindModeEnabled(),
     apiKey: settings.rememberKey ? safeString(settings.apiKey) : '',
     remoteLogging: settings.remoteLogging !== false,
     remoteLogUrl: safeString(settings.remoteLogUrl) || DEFAULT_REMOTE_LOG_URL,
@@ -265,6 +271,7 @@ function handleApiSubmit(event) {
 
   settings.model = safeString(refs.modelInput.value) || DEFAULT_MODEL;
   settings.rememberKey = refs.rememberKeyInput.checked;
+  settings.blindMode = refs.blindModeInput.checked;
 
   if (settings.rememberKey) {
     settings.apiKey = safeString(refs.apiKeyInput.value);
@@ -280,12 +287,13 @@ function handleApiSubmit(event) {
   appendLog('settings.save', 'Saved AI settings on this device.', {
     model: settings.model,
     rememberKey: settings.rememberKey,
+    blindMode: isBlindModeEnabled(),
     hasKey: Boolean(getApiKey()),
   });
   setBanner(
     getApiKey()
-      ? 'OpenAI settings saved. The key stays local to this browser.'
-      : 'Model setting saved. Add a key when you want to run AI analysis.',
+      ? `OpenAI settings saved. The key stays local to this browser. Blind mode is ${isBlindModeEnabled() ? 'on' : 'off'}.`
+      : `Model setting saved. Add a key when you want to run AI analysis. Blind mode is ${isBlindModeEnabled() ? 'on' : 'off'}.`,
     'success',
     4000,
   );
@@ -591,10 +599,15 @@ async function analyzePlace(placeId, { silent = false } = {}) {
   const place = getPlace(placeId);
   if (!place) throw new Error('Place not found.');
 
+  const blindMode = isBlindModeEnabled();
   place.aiState = 'working';
   place.aiError = '';
   saveState();
-  appendLog('place.ai.start', `Started AI place analysis for ${place.name}.`, { placeId: place.id, assetCount: place.assetIds?.length || 0 });
+  appendLog('place.ai.start', `Started AI place analysis for ${place.name}.`, {
+    placeId: place.id,
+    assetCount: place.assetIds?.length || 0,
+    blindMode,
+  });
   await render();
 
   try {
@@ -607,6 +620,9 @@ async function analyzePlace(placeId, { silent = false } = {}) {
       'Do not invent unsupported specifics.',
       'Focus on visible contextual cues that distinguish one place from another.',
       'Use concise language and return arrays for cue lists.',
+      blindMode
+        ? 'Blind mode is on. Ignore human naming assumptions and rely on the images only.'
+        : 'You may use the supplied human place metadata as additional context.',
     ].join(' ');
 
     const userText = `
@@ -625,18 +641,7 @@ Return JSON with this shape:
 }
 
 Place metadata:
-${JSON.stringify(
-      {
-        id: place.id,
-        name: place.name,
-        placeType: place.placeType,
-        parentPlaceLabel: resolvePlaceName(place.parentPlaceId),
-        description: place.description,
-        varianceNotes: place.varianceNotes,
-      },
-      null,
-      2,
-    )}
+${JSON.stringify(buildPlaceMetadataForPrompt(place, blindMode), null, 2)}
 
 The images belong to the same place.
 Capture what would help later place matching from object-in-context photos.
@@ -653,6 +658,7 @@ Capture what would help later place matching from object-in-context photos.
 
     place.aiSummary = {
       promptVersion: PLACE_PROMPT_VERSION,
+      contextMode: blindMode ? 'blind' : 'assisted',
       model: result.model,
       createdAt: new Date().toISOString(),
       rawText: result.rawText,
@@ -661,7 +667,7 @@ Capture what would help later place matching from object-in-context photos.
     place.aiState = 'done';
     place.aiError = '';
 
-    appendLog('place.ai.success', `AI place analysis succeeded for ${place.name}.`, { placeId: place.id, model: result.model });
+    appendLog('place.ai.success', `AI place analysis succeeded for ${place.name}.`, { placeId: place.id, model: result.model, blindMode });
     if (!silent) {
       setBanner(`AI place memory saved for ${place.name}.`, 'success', 4000);
     }
@@ -682,25 +688,22 @@ async function inferObject(objectId, { silent = false } = {}) {
   if (!object) throw new Error('Object not found.');
   if (!state.places.length) throw new Error('Map at least one place before running inference.');
 
+  const blindMode = isBlindModeEnabled();
   object.aiState = 'working';
   object.aiError = '';
   saveState();
-  appendLog('object.ai.start', `Started AI inference for ${object.name}.`, { objectId: object.id, assetCount: object.assetIds?.length || 0 });
+  appendLog('object.ai.start', `Started AI inference for ${object.name}.`, {
+    objectId: object.id,
+    assetCount: object.assetIds?.length || 0,
+    blindMode,
+  });
   await render();
 
   try {
     const objectAssets = await getAssets(object.assetIds);
     if (!objectAssets.length) throw new Error('This object has no saved images yet.');
 
-    const knownPlaces = state.places.map((place) => ({
-      id: place.id,
-      name: place.name,
-      placeType: place.placeType,
-      parentPlaceLabel: resolvePlaceName(place.parentPlaceId),
-      manualDescription: place.description,
-      varianceNotes: place.varianceNotes,
-      aiSummary: place.aiSummary?.normalized || null,
-    }));
+    const knownPlaces = buildKnownPlacesForInference(blindMode);
 
     const referenceImages = [];
     for (const place of state.places) {
@@ -709,7 +712,9 @@ async function inferObject(objectId, { silent = false } = {}) {
       const refAsset = await getAsset(refAssetId);
       if (!refAsset?.blob) continue;
       referenceImages.push({
-        label: `Reference place image for ${place.id}, ${place.name}, ${refAsset.captureType}`,
+        label: blindMode
+          ? `Reference place image for ${place.id}, ${refAsset.captureType}`
+          : `Reference place image for ${place.id}, ${place.name}, ${refAsset.captureType}`,
         blob: refAsset.blob,
       });
     }
@@ -720,6 +725,9 @@ async function inferObject(objectId, { silent = false } = {}) {
       'You must distinguish the object from the surrounding place context.',
       'predictedPlaceId must be one of the supplied known place ids, or null if evidence is insufficient.',
       'Use uncertainty honestly. Return alternative candidates when appropriate.',
+      blindMode
+        ? 'Blind mode is on. Human object labels, place labels, and notes have been withheld where possible. Rely on the images and blind place-memory cues.'
+        : 'You may use the supplied human object and place metadata as additional context.',
     ].join(' ');
 
     const userText = `
@@ -757,16 +765,7 @@ KNOWN_PLACES_JSON:
 ${JSON.stringify(knownPlaces, null, 2)}
 
 OBJECT_RECORD:
-${JSON.stringify(
-      {
-        name: object.name,
-        category: object.category,
-        notes: object.notes,
-        captureQuality: object.quality,
-      },
-      null,
-      2,
-    )}
+${JSON.stringify(buildObjectRecordForPrompt(object, blindMode), null, 2)}
 
 You will first see object images, then representative place images.
 Use both the object and the background context.
@@ -786,6 +785,7 @@ Use both the object and the background context.
 
     object.inference = {
       promptVersion: OBJECT_PROMPT_VERSION,
+      contextMode: blindMode ? 'blind' : 'assisted',
       model: result.model,
       createdAt: new Date().toISOString(),
       rawText: result.rawText,
@@ -797,6 +797,7 @@ Use both the object and the background context.
     appendLog('object.ai.success', `AI inference succeeded for ${object.name}.`, {
       objectId: object.id,
       model: result.model,
+      blindMode,
       predictedPlaceId: object.inference.normalized.place.predictedPlaceId,
     });
     if (!silent) {
@@ -945,6 +946,80 @@ function buildModelCandidates() {
 
 function usesCompletionTokens(model) {
   return safeString(model).startsWith('gpt-5');
+}
+
+function isBlindModeEnabled() {
+  return settings.blindMode !== false;
+}
+
+function buildPlaceMetadataForPrompt(place, blindMode) {
+  if (blindMode) {
+    return {
+      id: place.id,
+      blindMode: true,
+      note: 'Human place labels, types, and notes intentionally withheld from the model.',
+    };
+  }
+
+  return {
+    id: place.id,
+    name: place.name,
+    placeType: place.placeType,
+    parentPlaceLabel: resolvePlaceName(place.parentPlaceId),
+    description: place.description,
+    varianceNotes: place.varianceNotes,
+  };
+}
+
+function buildBlindAiSummary(summary) {
+  if (!summary) return null;
+  return {
+    visibleContextCues: normalizeStringArray(summary.visibleContextCues),
+    distinguishingFeatures: normalizeStringArray(summary.distinguishingFeatures),
+    likelyConfusions: normalizeStringArray(summary.likelyConfusions),
+    retrievalKeywords: normalizeStringArray(summary.retrievalKeywords),
+    confidence: normalizeConfidence(summary.confidence),
+    shouldHedge: Boolean(summary.shouldHedge),
+    notes: safeString(summary.notes),
+  };
+}
+
+function buildKnownPlacesForInference(blindMode) {
+  return state.places.map((place) => ({
+    id: place.id,
+    ...(blindMode
+      ? {
+          blindMode: true,
+          aiSummary: place.aiSummary?.contextMode === 'blind'
+            ? buildBlindAiSummary(place.aiSummary?.normalized)
+            : null,
+        }
+      : {
+          name: place.name,
+          placeType: place.placeType,
+          parentPlaceLabel: resolvePlaceName(place.parentPlaceId),
+          manualDescription: place.description,
+          varianceNotes: place.varianceNotes,
+          aiSummary: place.aiSummary?.normalized || null,
+        }),
+  }));
+}
+
+function buildObjectRecordForPrompt(object, blindMode) {
+  if (blindMode) {
+    return {
+      blindMode: true,
+      captureQuality: object.quality,
+      note: 'Human object labels, categories, and notes intentionally withheld from the model.',
+    };
+  }
+
+  return {
+    name: object.name,
+    category: object.category,
+    notes: object.notes,
+    captureQuality: object.quality,
+  };
 }
 
 function shouldTryAnotherModel(payload, status, model, modelCandidates) {
@@ -1626,12 +1701,13 @@ function updateRunStatus() {
 function updateApiStatus() {
   const apiKey = getApiKey();
   const model = settings.model || DEFAULT_MODEL;
+  const mode = isBlindModeEnabled() ? 'blind mode on' : 'blind mode off';
   if (apiKey) {
     refs.apiStatusText.textContent = 'Ready';
-    refs.apiStatusMeta.textContent = `${model}, key ${settings.rememberKey ? 'stored locally' : 'in memory only'}`;
+    refs.apiStatusMeta.textContent = `${model}, ${mode}, key ${settings.rememberKey ? 'stored locally' : 'in memory only'}`;
   } else {
     refs.apiStatusText.textContent = 'Key not set';
-    refs.apiStatusMeta.textContent = `Model ${model}, add a key in Overview`;
+    refs.apiStatusMeta.textContent = `Model ${model}, ${mode}, add a key in Overview`;
   }
 }
 

@@ -118,6 +118,11 @@
                   Remember this key on this device
                 </label>
 
+                <label class="inline-check">
+                  <input id="blindModeInput" type="checkbox" checked />
+                  Blind mode (default), hide human labels and notes from AI prompts
+                </label>
+
                 <div class="button-row align-left">
                   <button type="submit" class="primary">Save settings</button>
                   <button type="button" class="ghost" id="testConnectionBtn">Test AI connection</button>
@@ -128,7 +133,9 @@
                   If remember is off, the key stays only in memory until reload.
                   If remember is on, it is stored only in this browser. It is never
                   committed to the repo. This is still a client-side key, so use a test
-                  key you control.
+                  key you control. Blind mode keeps manual object/place labels and notes
+                  out of AI prompts by default, so the model leans more on images and
+                  blind place-memory cues.
                 </p>
               </form>
 
