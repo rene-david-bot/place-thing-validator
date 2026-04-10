@@ -845,7 +845,9 @@ async function callOpenAIJson({ systemPrompt, userText, imageEntries = [] }) {
     const basePayload = {
       model,
       temperature: 0.2,
-      max_tokens: 1800,
+      ...(usesCompletionTokens(model)
+        ? { max_completion_tokens: 1800 }
+        : { max_tokens: 1800 }),
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content },
@@ -939,6 +941,10 @@ function buildModelCandidates() {
     'gpt-4o-mini',
     'gpt-4.1-mini',
   ].filter(Boolean)));
+}
+
+function usesCompletionTokens(model) {
+  return safeString(model).startsWith('gpt-5');
 }
 
 function shouldTryAnotherModel(payload, status, model, modelCandidates) {
