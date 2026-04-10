@@ -7,6 +7,7 @@ const DEFAULT_REMOTE_LOG_URL = 'https://perception-attractive-metropolitan-journ
 const STALE_REMOTE_LOG_URLS = new Set([
   'https://plains-surplus-trusted-painting.trycloudflare.com/ingest',
 ]);
+const OPENAI_FETCH_TIMEOUT_MS = 45000;
 const PLACE_PROMPT_VERSION = 'place-v2-blind-default';
 const OBJECT_PROMPT_VERSION = 'object-v2-blind-default';
 
@@ -1621,6 +1622,29 @@ Use both the object and the background context.
   }
 }
 
+async function postOpenAIChatCompletion(apiKey, payload) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), OPENAI_FETCH_TIMEOUT_MS);
+  try {
+    return await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error(`OpenAI request timed out after ${Math.round(OPENAI_FETCH_TIMEOUT_MS / 1000)}s.`);
+    }
+    throw new Error('Network or browser error while contacting OpenAI. Check connectivity, key, and browser support.');
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function callOpenAIJson({ systemPrompt, userText, imageEntries = [], modelCandidates = null }) {
   const apiKey = getApiKey();
   if (!apiKey) throw new Error('No OpenAI key is set in this browser.');
@@ -1663,16 +1687,21 @@ async function callOpenAIJson({ systemPrompt, userText, imageEntries = [], model
 
     let response;
     try {
-      response = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(payload),
-      });
+      response = await postOpenAIChatCompletion(apiKey, payload);
     } catch (error) {
-      throw new Error('Network or browser error while contacting OpenAI. Check connectivity, key, and browser support.');
+      lastError = error instanceof Error ? error : new Error(String(error));
+      appendLog('ai.model.error', `Model ${model} request failed before a response was received.`, {
+        model,
+        error: lastError.message,
+      }, 'error');
+      if (candidates.length > 1) {
+        appendLog('ai.model.fallback', `Model ${model} failed before response, trying fallback.`, {
+          model,
+          error: lastError.message,
+        }, 'warn');
+        continue;
+      }
+      throw lastError;
     }
 
     let data = await safeJson(response);
@@ -1680,16 +1709,21 @@ async function callOpenAIJson({ systemPrompt, userText, imageEntries = [], model
     if (!response.ok && mentionsResponseFormatIssue(data)) {
       payload = { ...basePayload };
       try {
-        response = await fetch('https://api.openai.com/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify(payload),
-        });
+        response = await postOpenAIChatCompletion(apiKey, payload);
       } catch (error) {
-        throw new Error('Network or browser error while contacting OpenAI. Check connectivity, key, and browser support.');
+        lastError = error instanceof Error ? error : new Error(String(error));
+        appendLog('ai.model.error', `Model ${model} retry without response_format failed.`, {
+          model,
+          error: lastError.message,
+        }, 'error');
+        if (candidates.length > 1) {
+          appendLog('ai.model.fallback', `Model ${model} retry failed, trying fallback.`, {
+            model,
+            error: lastError.message,
+          }, 'warn');
+          continue;
+        }
+        throw lastError;
       }
       data = await safeJson(response);
     }
