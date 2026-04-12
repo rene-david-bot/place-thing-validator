@@ -3,7 +3,7 @@ const SETTINGS_KEY = 'placeThingValidatorSettingsV2';
 const DB_NAME = 'placeThingValidatorDB';
 const DB_VERSION = 1;
 const DEFAULT_MODEL = 'gpt-5.4-mini';
-const DEFAULT_MODEL_MIGRATION_VERSION = '2026-04-10-gpt-5.4-mini';
+const DEFAULT_MODEL_MIGRATION_VERSION = '2026-04-12-gpt-5.4-mini';
 const DEFAULT_REMOTE_LOG_URL = 'https://perception-attractive-metropolitan-journalist.trycloudflare.com/ingest';
 const STALE_REMOTE_LOG_URLS = new Set([
   'https://plains-surplus-trusted-painting.trycloudflare.com/ingest',
@@ -21,6 +21,7 @@ const DEFAULT_STATE = {
   logs: [],
   ui: {
     activeStep: 'overview',
+    pendingPlaceCaptureFromObject: false,
   },
 };
 
@@ -266,7 +267,8 @@ function loadSettings() {
     const parsedRemoteLogUrl = safeString(parsed?.remoteLogUrl);
     const parsedModel = safeString(parsed?.model);
     const parsedModelDefaultVersion = safeString(parsed?.modelDefaultVersion);
-    const migrateLegacyDefaultModel = !parsedModelDefaultVersion && (!parsedModel || parsedModel === 'gpt-5.4');
+    const migrateLegacyDefaultModel = (!parsedModel || parsedModel === 'gpt-5.4')
+      && parsedModelDefaultVersion !== DEFAULT_MODEL_MIGRATION_VERSION;
     return {
       ...fallback,
       ...parsed,
@@ -399,6 +401,12 @@ function handleRunSubmit(event) {
   setBanner(`Run saved, ${state.run.name}.`, 'success', 3500);
 }
 
+function beginPlaceCaptureFromObject(message) {
+  state.ui.pendingPlaceCaptureFromObject = true;
+  navigate('places');
+  setBanner(message, 'warn', 8000);
+}
+
 async function handlePlaceSubmit(event) {
   event.preventDefault();
   if (!ensureRun()) return;
@@ -451,9 +459,20 @@ async function handlePlaceSubmit(event) {
 
   refs.placeForm.reset();
   clearFormPreviews(refs.placeForm);
+  const resumeObjectCapture = Boolean(state.ui.pendingPlaceCaptureFromObject);
+  state.ui.pendingPlaceCaptureFromObject = false;
   saveState();
-  appendLog('place.save', `Saved place ${safeString(form.get('name'))}.`, { imageCount: assetIds.length });
+  appendLog('place.save', `Saved place ${safeString(form.get('name'))}.`, {
+    imageCount: assetIds.length,
+    resumedObjectCapture: resumeObjectCapture,
+  });
   await render();
+  if (resumeObjectCapture) {
+    navigate('objects');
+    refs.objectForm.elements.placeId.value = placeId;
+    setBanner('Mapped place saved. I took you back to the object flow and selected the new place, now run AI prefill again or save the object.', 'success', 6000);
+    return;
+  }
   setBanner('Mapped place saved. You can analyze it with AI now.', 'success', 3500);
 }
 
@@ -644,7 +663,7 @@ You will first see the object-in-context photo, then optional alternate object v
   await render();
 
   if (!draft.place.predictedPlaceId || draft.place.shouldCapturePlaceFirst) {
-    setBanner('I am not sure this place is mapped yet. Capture the place first or choose a mapped place before saving the object.', 'warn', 7000);
+    beginPlaceCaptureFromObject('I do not think this place is mapped yet. I moved you to place capture so you can map it first, then finish saving the object.');
   } else if (lowConfidence) {
     setBanner(`I prefilled the object and place, but I am not fully sure. Please review ${draft.object.predictedLabel || 'the object'} and ${placeName}, and add the optional second photo if needed before saving.`, 'warn', 7000);
   } else {
@@ -671,10 +690,9 @@ async function handleObjectSubmit(event) {
     try {
       await prefillObjectFromForm();
       if (!safeString(refs.objectForm.elements.placeId.value)) {
-        setBanner('The object is prefilled, but I still do not know the place. Capture the place first, choose it manually, or add the optional second photo if needed.', 'warn', 7000);
-      } else {
-        setBanner('The object is prefilled. Review the suggestion, adjust if needed, then tap Save object again.', 'success', 6000);
+        return;
       }
+      setBanner('The object is prefilled. Review the suggestion, adjust if needed, then tap Save object again.', 'success', 6000);
     } catch (error) {
       console.error(error);
       setBanner(error?.message || 'AI prefill failed.', 'error', 6000);
@@ -707,6 +725,8 @@ async function handleObjectSubmit(event) {
   const savedPlaceId = safeString(form.get('placeId'));
   const usedAiPrefill = Boolean(objectPrefillDraft);
   const savedInference = buildInferenceFromPrefillDraft(objectPrefillDraft);
+
+  state.ui.pendingPlaceCaptureFromObject = false;
 
   state.objects.push({
     id: objectId,
