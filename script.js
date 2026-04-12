@@ -3,7 +3,7 @@ const SETTINGS_KEY = 'placeThingValidatorSettingsV2';
 const DB_NAME = 'placeThingValidatorDB';
 const DB_VERSION = 1;
 const DEFAULT_MODEL = 'gpt-5.4-mini';
-const DEFAULT_MODEL_MIGRATION_VERSION = '2026-04-12-gpt-5.4-mini';
+const DEFAULT_MODEL_MIGRATION_VERSION = '2026-04-12-gpt-5.4-mini-v2';
 const DEFAULT_REMOTE_LOG_URL = 'https://perception-attractive-metropolitan-journalist.trycloudflare.com/ingest';
 const STALE_REMOTE_LOG_URLS = new Set([
   'https://plains-surplus-trusted-painting.trycloudflare.com/ingest',
@@ -266,9 +266,10 @@ function loadSettings() {
     if (!raw) return fallback;
     const parsed = JSON.parse(raw);
     const parsedRemoteLogUrl = safeString(parsed?.remoteLogUrl);
-    const parsedModel = safeString(parsed?.model);
-    const parsedModelPinnedByUser = parsed?.modelPinnedByUser === true;
     const parsedModelDefaultVersion = safeString(parsed?.modelDefaultVersion);
+    const parsedModel = normalizeConfiguredModel(parsed?.model);
+    const parsedModelPinnedByUser = parsed?.modelPinnedByUser === true
+      && parsedModelDefaultVersion === DEFAULT_MODEL_MIGRATION_VERSION;
     const migrateLegacyDefaultModel = !parsedModelPinnedByUser
       && (!parsedModel || parsedModel === 'gpt-5.4');
     return {
@@ -312,7 +313,8 @@ function saveSettings() {
 function handleApiSubmit(event) {
   event.preventDefault();
 
-  settings.model = safeString(refs.modelInput.value) || DEFAULT_MODEL;
+  settings.model = normalizeConfiguredModel(refs.modelInput.value) || DEFAULT_MODEL;
+  refs.modelInput.value = settings.model;
   settings.modelPinnedByUser = settings.model !== DEFAULT_MODEL;
   settings.rememberKey = refs.rememberKeyInput.checked;
   settings.blindMode = refs.blindModeInput.checked;
@@ -369,10 +371,6 @@ async function testOpenAIConnection() {
       imageEntries: [],
     });
 
-    settings.model = result.model;
-    settings.modelPinnedByUser = result.model !== DEFAULT_MODEL;
-    refs.modelInput.value = result.model;
-    saveSettings();
     updateApiStatus();
     appendLog('ai.connection_test', 'AI connection test succeeded.', {
       model: result.model,
@@ -1882,8 +1880,28 @@ function buildModelCandidates() {
   ].filter(Boolean)));
 }
 
+function normalizeConfiguredModel(model) {
+  const raw = safeString(model);
+  const normalized = raw.toLowerCase();
+  if (!normalized) return '';
+  if (normalized.startsWith('gpt-5.4-mini')) return 'gpt-5.4-mini';
+  if (normalized.startsWith('gpt-5.4-nano')) return 'gpt-5.4-nano';
+  if (normalized.startsWith('gpt-5.4')) return 'gpt-5.4';
+  if (normalized.startsWith('gpt-5.2')) return 'gpt-5.2';
+  if (normalized.startsWith('gpt-5.1')) return 'gpt-5.1';
+  if (normalized.startsWith('gpt-5-mini')) return 'gpt-5-mini';
+  if (normalized.startsWith('gpt-5-nano')) return 'gpt-5-nano';
+  if (normalized.startsWith('gpt-5')) return 'gpt-5';
+  if (normalized.startsWith('gpt-4.1-mini')) return 'gpt-4.1-mini';
+  if (normalized.startsWith('gpt-4.1-nano')) return 'gpt-4.1-nano';
+  if (normalized.startsWith('gpt-4.1')) return 'gpt-4.1';
+  if (normalized.startsWith('gpt-4o-mini')) return 'gpt-4o-mini';
+  if (normalized.startsWith('gpt-4o')) return 'gpt-4o';
+  return raw;
+}
+
 function resolvePricingModel(model) {
-  const normalized = safeString(model).toLowerCase();
+  const normalized = normalizeConfiguredModel(model).toLowerCase();
   if (!normalized) return null;
   if (normalized.startsWith('gpt-5.4-mini')) return 'gpt-5.4-mini';
   if (normalized.startsWith('gpt-5.4-nano')) return 'gpt-5.4-nano';
