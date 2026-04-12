@@ -27,6 +27,7 @@ const DEFAULT_STATE = {
 
 const DEFAULT_SETTINGS = {
   model: DEFAULT_MODEL,
+  modelPinnedByUser: false,
   modelDefaultVersion: DEFAULT_MODEL_MIGRATION_VERSION,
   rememberKey: true,
   blindMode: true,
@@ -266,13 +267,15 @@ function loadSettings() {
     const parsed = JSON.parse(raw);
     const parsedRemoteLogUrl = safeString(parsed?.remoteLogUrl);
     const parsedModel = safeString(parsed?.model);
+    const parsedModelPinnedByUser = parsed?.modelPinnedByUser === true;
     const parsedModelDefaultVersion = safeString(parsed?.modelDefaultVersion);
-    const migrateLegacyDefaultModel = (!parsedModel || parsedModel === 'gpt-5.4')
-      && parsedModelDefaultVersion !== DEFAULT_MODEL_MIGRATION_VERSION;
+    const migrateLegacyDefaultModel = !parsedModelPinnedByUser
+      && (!parsedModel || parsedModel === 'gpt-5.4');
     return {
       ...fallback,
       ...parsed,
       model: migrateLegacyDefaultModel ? DEFAULT_MODEL : (parsedModel || DEFAULT_MODEL),
+      modelPinnedByUser: parsedModelPinnedByUser && parsedModel && parsedModel !== DEFAULT_MODEL,
       modelDefaultVersion: parsedModelDefaultVersion || DEFAULT_MODEL_MIGRATION_VERSION,
       rememberKey: Boolean(parsed?.rememberKey),
       blindMode: parsed?.blindMode !== false,
@@ -294,6 +297,7 @@ function saveState() {
 function saveSettings() {
   const persisted = {
     model: safeString(settings.model) || DEFAULT_MODEL,
+    modelPinnedByUser: settings.modelPinnedByUser === true && safeString(settings.model) !== DEFAULT_MODEL,
     modelDefaultVersion: DEFAULT_MODEL_MIGRATION_VERSION,
     rememberKey: Boolean(settings.rememberKey),
     blindMode: isBlindModeEnabled(),
@@ -309,6 +313,7 @@ function handleApiSubmit(event) {
   event.preventDefault();
 
   settings.model = safeString(refs.modelInput.value) || DEFAULT_MODEL;
+  settings.modelPinnedByUser = settings.model !== DEFAULT_MODEL;
   settings.rememberKey = refs.rememberKeyInput.checked;
   settings.blindMode = refs.blindModeInput.checked;
 
@@ -365,6 +370,7 @@ async function testOpenAIConnection() {
     });
 
     settings.model = result.model;
+    settings.modelPinnedByUser = result.model !== DEFAULT_MODEL;
     refs.modelInput.value = result.model;
     saveSettings();
     updateApiStatus();
