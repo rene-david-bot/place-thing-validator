@@ -4,8 +4,9 @@ const DB_NAME = 'placeThingValidatorDB';
 const DB_VERSION = 1;
 const DEFAULT_MODEL = 'gpt-5.4-mini';
 const DEFAULT_MODEL_MIGRATION_VERSION = '2026-04-12-gpt-5.4-mini-v2';
-const DEFAULT_REMOTE_LOG_URL = 'https://perception-attractive-metropolitan-journalist.trycloudflare.com/ingest';
+const DEFAULT_REMOTE_LOG_URL = 'https://bras-base-least-deemed.trycloudflare.com/ingest';
 const STALE_REMOTE_LOG_URLS = new Set([
+  'https://perception-attractive-metropolitan-journalist.trycloudflare.com/ingest',
   'https://plains-surplus-trusted-painting.trycloudflare.com/ingest',
 ]);
 const OPENAI_FETCH_TIMEOUT_MS = 45000;
